@@ -27,18 +27,16 @@ def _get_memory() -> Memory:
         return _memory_instance
 
     s = get_settings()
-    groq_keys = _csv(s.groq_api_keys)
     gemini_keys = _csv(s.gemini_api_keys)
 
     base = {
         "llm": {
-            "provider": "groq",
+            "provider": "gemini",
             "config": {
-                # Use small fast model for mem0 extraction — separate TPM bucket from chat.
-                # llama-3.3-70b-versatile is 12K TPM; llama-3.1-8b-instant is 20K TPM.
-                # Using a different model avoids starving the chat model under load.
-                "model": "llama-3.1-8b-instant",
-                "api_key": groq_keys[0] if groq_keys else "",
+                # Gemini Flash for mem0 extraction — free tier has 1M TPM vs Groq's 6K.
+                # Groq llama-3.1-8b-instant only 6K TPM; extraction prompt alone hits ~4K.
+                "model": "gemini-2.0-flash",
+                "api_key": gemini_keys[0] if gemini_keys else "",
             },
         },
         "embedder": {
@@ -51,18 +49,13 @@ def _get_memory() -> Memory:
         },
         # Only extract durable personal facts the USER stated — never assistant actions.
         "custom_fact_extraction_prompt": (
-            "You extract ONLY durable personal facts explicitly stated by the USER.\n"
-            "EXTRACT: name, age, job title, profession, employer, location, skills, "
-            "hobbies, interests, preferences, goals, family members (name + relation), "
-            "education, projects they are working on, opinions they stated.\n"
-            "DO NOT EXTRACT under any circumstance:\n"
-            "- What the assistant said, asked, or did\n"
-            "- Greetings or small talk ('hi', 'hello', 'how are you')\n"
-            "- Conversation metadata (dates, timestamps, session info)\n"
-            "- Questions the user asked (only facts they stated)\n"
-            "- Anything that starts with 'User was asked', 'Assistant greeted', "
-            "'User initiated', 'Assistant inquired'\n"
-            "If the user message contains no durable personal facts, return empty list."
+            "Extract ONLY durable personal facts the USER explicitly stated.\n"
+            "EXTRACT: name, age, job, employer, location, skills, hobbies, interests, "
+            "goals, family (name+relation), education, projects, opinions.\n"
+            "SKIP: assistant actions, greetings, small talk, questions the user asked, "
+            "timestamps, session metadata, anything starting with 'User was asked' or "
+            "'Assistant'.\n"
+            "No durable facts → return empty list."
         ),
     }
 
