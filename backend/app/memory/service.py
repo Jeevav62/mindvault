@@ -49,13 +49,20 @@ def _get_memory() -> Memory:
                 "api_key": gemini_keys[0] if gemini_keys else "",
             },
         },
-        # Only store durable personal facts — not greetings, timestamps, or assistant actions.
+        # Only extract durable personal facts the USER stated — never assistant actions.
         "custom_fact_extraction_prompt": (
-            "Extract only important, durable personal facts about the user: "
-            "their name, job title, profession, technical skills, interests, hobbies, "
-            "preferences, goals, or significant personal information they have shared. "
-            "Do NOT store: greetings, pleasantries, conversation timestamps, "
-            "what the assistant said or did, or any ephemeral/one-off context."
+            "You extract ONLY durable personal facts explicitly stated by the USER.\n"
+            "EXTRACT: name, age, job title, profession, employer, location, skills, "
+            "hobbies, interests, preferences, goals, family members (name + relation), "
+            "education, projects they are working on, opinions they stated.\n"
+            "DO NOT EXTRACT under any circumstance:\n"
+            "- What the assistant said, asked, or did\n"
+            "- Greetings or small talk ('hi', 'hello', 'how are you')\n"
+            "- Conversation metadata (dates, timestamps, session info)\n"
+            "- Questions the user asked (only facts they stated)\n"
+            "- Anything that starts with 'User was asked', 'Assistant greeted', "
+            "'User initiated', 'Assistant inquired'\n"
+            "If the user message contains no durable personal facts, return empty list."
         ),
     }
 
@@ -98,11 +105,9 @@ def _get_memory() -> Memory:
 
 async def add_turn(user_id: str, question: str, answer: str) -> None:
     mem = _get_memory()
-    messages = [
-        {"role": "user", "content": question},
-        {"role": "assistant", "content": answer},
-    ]
-    # mem0ai 2.x: add() still takes user_id= kwarg; only search/get_all/delete_all use filters=
+    # Only pass the user message — assistant responses contain no personal facts
+    # and cause mem0 to extract noise like "assistant greeted user".
+    messages = [{"role": "user", "content": question}]
     await asyncio.to_thread(mem.add, messages, user_id=user_id)
 
 
