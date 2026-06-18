@@ -40,9 +40,7 @@ def _get_memory() -> Memory:
             "config": {
                 # llama-3.1-8b-instant: 6K TPM per key on free tier.
                 # Use dedicated last key so chat rotation doesn't starve extraction.
-                # gemma2-9b-it: 15k TPM (vs 8b-instant's 6k) — needed because
-                # mem0's extraction prompt hits ~10k tokens with existing memories.
-                "model": "gemma2-9b-it",
+                "model": "llama-3.1-8b-instant",
                 "api_key": mem0_groq_key,
             },
         },
@@ -120,8 +118,27 @@ async def search(user_id: str, query: str, *, limit: int = 5) -> list[str]:
 
 async def get_all(user_id: str) -> list[dict]:
     mem = _get_memory()
-    result = await asyncio.to_thread(mem.get_all, user_id=user_id)
-    return result.get("results", result) if isinstance(result, dict) else result
+    try:
+        result = await asyncio.to_thread(mem.get_all, filters={"user_id": user_id})
+        items = result.get("results", result) if isinstance(result, dict) else result
+        if items:
+            return items
+    except Exception as e:
+        logger.warning("get_all() failed: %s — trying broad search fallback", e)
+    # Qdrant scroll filter sometimes returns empty even when records exist;
+    # fall back to a broad vector search which uses /points/query instead.
+    try:
+        result = await asyncio.to_thread(
+            mem.search,
+            "name age job skills hobbies interests family education projects",
+            filters={"user_id": user_id},
+            limit=50,
+        )
+        items = result.get("results", result) if isinstance(result, dict) else result
+        return [i for i in items if i.get("memory")]
+    except Exception as e2:
+        logger.warning("get_all fallback search also failed: %s", e2)
+        return []
 
 
 async def wipe(user_id: str) -> None:

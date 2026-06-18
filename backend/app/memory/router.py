@@ -22,9 +22,12 @@ class MemoryListResponse(BaseModel):
 
 @router.get("", response_model=MemoryListResponse)
 async def list_memories(user: UserRecord = Depends(get_current_user)) -> MemoryListResponse:
-    raw = await service.get_all(user.id)
+    try:
+        raw = await service.get_all(user.id)
+    except Exception:
+        raw = []
     return MemoryListResponse(
-        items=[MemoryItem(id=str(m.get("id", "")), memory=m.get("memory", "")) for m in raw]
+        items=[MemoryItem(id=str(m.get("id", "")), memory=m.get("memory", "")) for m in raw if m.get("memory")]
     )
 
 
