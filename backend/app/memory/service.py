@@ -40,7 +40,9 @@ def _get_memory() -> Memory:
             "config": {
                 # llama-3.1-8b-instant: 6K TPM per key on free tier.
                 # Use dedicated last key so chat rotation doesn't starve extraction.
-                "model": "llama-3.1-8b-instant",
+                # gemma2-9b-it: 15k TPM (vs 8b-instant's 6k) — needed because
+                # mem0's extraction prompt hits ~10k tokens with existing memories.
+                "model": "gemma2-9b-it",
                 "api_key": mem0_groq_key,
             },
         },
@@ -118,7 +120,7 @@ async def search(user_id: str, query: str, *, limit: int = 5) -> list[str]:
 
 async def get_all(user_id: str) -> list[dict]:
     mem = _get_memory()
-    result = await asyncio.to_thread(mem.get_all, filters={"user_id": user_id})
+    result = await asyncio.to_thread(mem.get_all, user_id=user_id)
     return result.get("results", result) if isinstance(result, dict) else result
 
 
