@@ -16,11 +16,17 @@ from .service import answer_question, answer_question_stream
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+class HistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=8000)
+
+
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=5, ge=1, le=20)
     mode: Literal["doc", "personal"] = "doc"
     doc_ids: list[str] | None = None
+    history: list[HistoryMessage] = Field(default_factory=list, max_length=20)
 
 
 class CitationOut(BaseModel):
@@ -57,9 +63,11 @@ async def chat(
     body: ChatRequest,
     user: UserRecord = Depends(get_current_user),
 ) -> ChatResponse:
+    history = [(m.role, m.content) for m in body.history]
     try:
         result = await answer_question(
-            user.id, body.question, top_k=body.top_k, mode=body.mode, doc_ids=body.doc_ids
+            user.id, body.question, top_k=body.top_k, mode=body.mode,
+            doc_ids=body.doc_ids, history=history,
         )
     except ProviderError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"model/embedding failed: {exc}")
@@ -74,9 +82,10 @@ async def chat_stream(
 ):
     async def event_gen():
         try:
-            async for event in answer_question_stream(
+            history = [(m.role, m.content) for m in body.history]
+        async for event in answer_question_stream(
                 user.id, body.question,
-                top_k=body.top_k, mode=body.mode, doc_ids=body.doc_ids,
+                top_k=body.top_k, mode=body.mode, doc_ids=body.doc_ids, history=history,
             ):
                 if event["type"] == "citations":
                     top = _top_citation(event["citations"])

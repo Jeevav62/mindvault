@@ -42,19 +42,21 @@ def build_messages(
     *,
     memories: list[str] | None = None,
     mode: str = "doc",
+    history: list[tuple[str, str]] | None = None,
     max_context_chars: int = 8000,
+    max_history_turns: int = 10,
 ) -> tuple[list[ChatMessage], list[Hit]]:
     """Return (messages, used_hits). Personal mode skips doc context."""
     memory_block = "\n".join(f"- {m}" for m in memories) if memories else "(none yet)"
+    recent_history = (history or [])[-max_history_turns * 2:]
 
     if mode == "personal":
-        user_content = (
-            f"Long-term memory about this user:\n{memory_block}\n\nMessage: {question}"
-        )
-        return [
-            ChatMessage(role="system", content=_PERSONAL_SYSTEM),
-            ChatMessage(role="user", content=user_content),
-        ], []
+        system = _PERSONAL_SYSTEM + f"\n\nLong-term memory about this user:\n{memory_block}"
+        msgs: list[ChatMessage] = [ChatMessage(role="system", content=system)]
+        for role, content in recent_history:
+            msgs.append(ChatMessage(role=role, content=content))
+        msgs.append(ChatMessage(role="user", content=question))
+        return msgs, []
 
     used = _budget_context(hits, max_context_chars)
     context = (
@@ -62,11 +64,10 @@ def build_messages(
         if used
         else "(no relevant passages found)"
     )
-    user_content = (
-        f"Long-term memory about this user:\n{memory_block}\n\n"
-        f"Context passages:\n{context}\n\nQuestion: {question}"
-    )
-    return [
-        ChatMessage(role="system", content=_DOC_SYSTEM),
-        ChatMessage(role="user", content=user_content),
-    ], used
+    system = _DOC_SYSTEM + f"\n\nLong-term memory about this user:\n{memory_block}"
+    msgs = [ChatMessage(role="system", content=system)]
+    for role, content in recent_history:
+        msgs.append(ChatMessage(role=role, content=content))
+    user_content = f"Context passages:\n{context}\n\nQuestion: {question}"
+    msgs.append(ChatMessage(role="user", content=user_content))
+    return msgs, used

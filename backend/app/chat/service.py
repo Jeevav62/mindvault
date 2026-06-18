@@ -51,6 +51,7 @@ async def answer_question(
     top_k: int = 5,
     mode: str = "doc",
     doc_ids: list[str] | None = None,
+    history: list[tuple[str, str]] | None = None,
 ) -> ChatAnswer:
     emb_router = get_embedding_router()
     qvec = (await emb_router.run(lambda p: p.embed([question], input_type="query")))[0]
@@ -66,7 +67,7 @@ async def answer_question(
         logger.exception("memory search failed; continuing without it")
         memories = []
 
-    messages, used = build_messages(question, hits, memories=memories, mode=mode)
+    messages, used = build_messages(question, hits, memories=memories, mode=mode, history=history or [])
     llm_router = get_llm_router()
     text = await llm_router.run(lambda p: p.complete(messages))
 
@@ -82,6 +83,7 @@ async def answer_question_stream(
     top_k: int = 5,
     mode: str = "doc",
     doc_ids: list[str] | None = None,
+    history: list[tuple[str, str]] | None = None,
 ):
     """Async generator yielding SSE event dicts: citations → tokens → done."""
     emb_router = get_embedding_router()
@@ -98,7 +100,7 @@ async def answer_question_stream(
         logger.exception("memory search failed; continuing without it")
         memories = []
 
-    messages, used = build_messages(question, hits, memories=memories, mode=mode)
+    messages, used = build_messages(question, hits, memories=memories, mode=mode, history=history or [])
 
     yield {"type": "citations", "citations": _hits_to_citations(used)}
 
