@@ -77,7 +77,10 @@ async function json<T>(res: Response, retry?: () => Promise<Response>): Promise<
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `Request failed (${res.status})`);
+    const detail = Array.isArray(body.detail)
+      ? body.detail.map((e: any) => `${e.loc?.slice(-1)[0] ?? "field"}: ${e.msg}`).join("; ")
+      : body.detail;
+    throw new Error(detail || `Request failed (${res.status})`);
   }
   return res.json();
 }
@@ -206,7 +209,10 @@ export async function askStream(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `Request failed (${res.status})`);
+    const detail = Array.isArray(body.detail)
+      ? body.detail.map((e: any) => `${e.loc?.slice(-1)[0] ?? "field"}: ${e.msg}`).join("; ")
+      : body.detail;
+    throw new Error(detail || `Request failed (${res.status})`);
   }
 
   const reader = res.body!.getReader();
