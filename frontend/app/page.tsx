@@ -7,7 +7,7 @@ import remarkGfm from "remark-gfm";
 import {
   askStream, clearMemories, clearToken, deleteDoc, getMemories,
   getToken, getUserId, login, saveToken, signup, uploadDoc,
-  type ChatMode, type Citation,
+  type ChatMode, type Citation, type HistoryMessage,
 } from "@/lib/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -428,6 +428,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
 
     setMessages(m => [...m, userMsg, { role: "assistant", text: "", citations: [], mode: session.mode, streaming: true }]);
 
+    const history: HistoryMessage[] = messages.map(m => ({ role: m.role, content: m.text }));
     let accText = ""; let accCitations: Citation[] = [];
 
     try {
@@ -445,6 +446,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
           const finalMsgs = [...baseMessages, { role: "assistant" as const, text: accText, citations: accCitations, mode: session.mode, streaming: false }];
           setMessages(finalMsgs); onSessionUpdate({ ...session, title: autoTitle, messages: finalMsgs, updatedAt: Date.now() }); setBusy(false);
         },
+        history,
       );
     } catch (err: any) {
       const errMsgs = [...baseMessages, { role: "assistant" as const, text: `Error: ${err.message}`, mode: session.mode }];

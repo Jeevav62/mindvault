@@ -145,6 +145,8 @@ export async function ask(question: string, mode: ChatMode = "doc", docIds: stri
   return json<{ answer: string; citations: Citation[] }>(res, doFetch);
 }
 
+export type HistoryMessage = { role: "user" | "assistant"; content: string };
+
 export async function askStream(
   question: string,
   mode: ChatMode,
@@ -153,6 +155,7 @@ export async function askStream(
   onToken: (token: string) => void,
   onError: (msg: string) => void,
   onDone: () => void,
+  history: HistoryMessage[] = [],
 ): Promise<void> {
   const makeReq = () =>
     fetch(`${API}/chat/stream`, {
@@ -161,7 +164,7 @@ export async function askStream(
         "Content-Type": "application/json",
         Authorization: `Bearer ${getToken()}`,
       },
-      body: JSON.stringify({ question, mode, doc_ids: docIds }),
+      body: JSON.stringify({ question, mode, doc_ids: docIds, history }),
     });
 
   let res = await makeReq();
