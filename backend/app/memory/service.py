@@ -91,22 +91,23 @@ async def add_turn(user_id: str, question: str, answer: str) -> None:
         {"role": "user", "content": question},
         {"role": "assistant", "content": answer},
     ]
-    await asyncio.to_thread(mem.add, messages, user_id=user_id)
+    # mem0ai 2.x: user_id moved to filters kwarg
+    await asyncio.to_thread(mem.add, messages, filters={"user_id": user_id})
 
 
 async def search(user_id: str, query: str, *, limit: int = 5) -> list[str]:
     mem = _get_memory()
-    result = await asyncio.to_thread(mem.search, query, user_id=user_id, limit=limit)
+    result = await asyncio.to_thread(mem.search, query, filters={"user_id": user_id}, limit=limit)
     items = result.get("results", result) if isinstance(result, dict) else result
     return [item["memory"] for item in items if item.get("memory")]
 
 
 async def get_all(user_id: str) -> list[dict]:
     mem = _get_memory()
-    result = await asyncio.to_thread(mem.get_all, user_id=user_id)
+    result = await asyncio.to_thread(mem.get_all, filters={"user_id": user_id})
     return result.get("results", result) if isinstance(result, dict) else result
 
 
 async def wipe(user_id: str) -> None:
     mem = _get_memory()
-    await asyncio.to_thread(mem.delete_all, user_id=user_id)
+    await asyncio.to_thread(mem.delete_all, filters={"user_id": user_id})
