@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json as _json
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,6 +15,7 @@ from app.providers.base import ProviderError
 from .service import answer_question, answer_question_stream
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 
 class HistoryMessage(BaseModel):
@@ -83,7 +85,7 @@ async def chat_stream(
     async def event_gen():
         try:
             history = [(m.role, m.content) for m in body.history]
-        async for event in answer_question_stream(
+            async for event in answer_question_stream(
                 user.id, body.question,
                 top_k=body.top_k, mode=body.mode, doc_ids=body.doc_ids, history=history,
             ):
@@ -106,7 +108,3 @@ async def chat_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-import logging
-logger = logging.getLogger(__name__)
