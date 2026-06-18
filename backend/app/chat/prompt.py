@@ -1,15 +1,10 @@
-"""Prompt construction for grounded RAG answers.
-
-The system prompt enforces the core RAG contract: answer ONLY from retrieved
-context, cite sources, and explicitly refuse when the answer isn't present —
-this is what stops the model from hallucinating beyond the documents.
-"""
+"""Prompt construction for grounded RAG answers and personal chat mode."""
 from __future__ import annotations
 
 from app.providers.base import ChatMessage
 from app.vectorstore import Hit
 
-SYSTEM_PROMPT = """You are a precise document assistant. Answer the user's \
+_DOC_SYSTEM = """You are a precise document assistant. Answer the user's \
 question using ONLY the context passages provided below.
 
 Rules:
@@ -18,15 +13,22 @@ Rules:
 your documents." Do not guess.
 - Cite the sources you used inline as [source: <name> #<chunk>].
 - Be concise and direct. Prefer quoting/paraphrasing the context over padding.
+- "Long-term memory" below is what you remember about this user from past \
+sessions — use it to personalize tone/context, but never as a substitute for \
+document context, and never let it override the refusal rule above.
 """
+
+_PERSONAL_SYSTEM = """You are a helpful personal assistant with memory of past \
+conversations. Use the long-term memory below to personalize your responses. \
+Answer freely and conversationally — no document grounding required. \
+Be friendly, concise, and helpful."""
 
 
 def _budget_context(hits: list[Hit], max_chars: int) -> list[Hit]:
-    """Keep top hits (already score-ordered) until the char budget is spent."""
     kept: list[Hit] = []
     used = 0
     for h in hits:
-        block = len(h.text) + 40  # rough overhead per labelled block
+        block = len(h.text) + 40
         if kept and used + block > max_chars:
             break
         kept.append(h)
@@ -35,20 +37,36 @@ def _budget_context(hits: list[Hit], max_chars: int) -> list[Hit]:
 
 
 def build_messages(
-    question: str, hits: list[Hit], *, max_context_chars: int = 8000
+    question: str,
+    hits: list[Hit],
+    *,
+    memories: list[str] | None = None,
+    mode: str = "doc",
+    max_context_chars: int = 8000,
 ) -> tuple[list[ChatMessage], list[Hit]]:
-    """Return (messages, used_hits). used_hits drives the citation list."""
-    used = _budget_context(hits, max_context_chars)
-    if used:
-        context = "\n\n".join(
-            f"[source: {h.source} #{h.chunk_index}]\n{h.text}" for h in used
-        )
-    else:
-        context = "(no relevant passages found)"
+    """Return (messages, used_hits). Personal mode skips doc context."""
+    memory_block = "\n".join(f"- {m}" for m in memories) if memories else "(none yet)"
 
-    user_content = f"Context passages:\n{context}\n\nQuestion: {question}"
-    messages = [
-        ChatMessage(role="system", content=SYSTEM_PROMPT),
+    if mode == "personal":
+        user_content = (
+            f"Long-term memory about this user:\n{memory_block}\n\nMessage: {question}"
+        )
+        return [
+            ChatMessage(role="system", content=_PERSONAL_SYSTEM),
+            ChatMessage(role="user", content=user_content),
+        ], []
+
+    used = _budget_context(hits, max_context_chars)
+    context = (
+        "\n\n".join(f"[source: {h.source} #{h.chunk_index}]\n{h.text}" for h in used)
+        if used
+        else "(no relevant passages found)"
+    )
+    user_content = (
+        f"Long-term memory about this user:\n{memory_block}\n\n"
+        f"Context passages:\n{context}\n\nQuestion: {question}"
+    )
+    return [
+        ChatMessage(role="system", content=_DOC_SYSTEM),
         ChatMessage(role="user", content=user_content),
-    ]
-    return messages, used
+    ], used
