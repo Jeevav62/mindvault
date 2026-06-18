@@ -199,7 +199,12 @@ export async function askStream(
       try {
         const data = JSON.parse(raw);
         if (data.type === "citations") onCitations(data.citations);
-        else if (data.type === "token") onToken(data.content);
+        else if (data.type === "token") {
+          onToken(data.content);
+          // Yield to the event loop so React renders each token individually
+          // instead of batching all tokens from one TCP chunk into one update.
+          await Promise.resolve();
+        }
         else if (data.type === "error") onError(data.message);
         else if (data.type === "done") onDone();
       } catch { /* skip malformed event */ }
