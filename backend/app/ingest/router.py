@@ -7,6 +7,8 @@ from app.auth.dependencies import get_current_user
 from app.auth.repository import UserRecord
 from app.providers.base import ProviderError
 
+from app.vectorstore import delete_doc
+
 from .extract import UnsupportedFileType
 from .service import EmptyDocument, ingest_document
 
@@ -48,3 +50,14 @@ async def ingest(
         filename=result.filename,
         chunk_count=result.chunk_count,
     )
+
+
+@router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    doc_id: str,
+    user: UserRecord = Depends(get_current_user),
+) -> None:
+    try:
+        await delete_doc(user.id, doc_id)
+    except Exception as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"delete failed: {exc}")

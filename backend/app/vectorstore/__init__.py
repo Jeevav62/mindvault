@@ -10,7 +10,7 @@ from .pinecone_store import PineconeStore
 from .qdrant_store import QdrantStore
 from .router import AllStoresFailed, VectorStoreRouter
 
-__all__ = ["Chunk", "Hit", "ensure_collection", "upsert_chunks", "search", "aclose"]
+__all__ = ["Chunk", "Hit", "ensure_collection", "upsert_chunks", "search", "delete_doc", "aclose"]
 
 
 @lru_cache
@@ -39,6 +39,10 @@ async def search(
     user_id: str, query_vector: list[float], *, top_k: int = 5
 ) -> list[Hit]:
     return await _get_router().search(user_id, query_vector, top_k=top_k)
+
+
+async def delete_doc(user_id: str, doc_id: str) -> None:
+    await _get_router().delete_doc(user_id, doc_id)
 
 
 async def aclose() -> None:

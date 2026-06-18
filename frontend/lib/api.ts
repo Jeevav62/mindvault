@@ -123,6 +123,17 @@ export async function ask(question: string, mode: ChatMode = "doc") {
   return json<{ answer: string; citations: Citation[] }>(res, doFetch);
 }
 
+export async function deleteDoc(docId: string) {
+  const doFetch = () =>
+    fetch(`${API}/ingest/${encodeURIComponent(docId)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+  const res = await doFetch();
+  if (res.status === 204) return;
+  return json<void>(res, doFetch);
+}
+
 export async function getMemories() {
   const doFetch = () =>
     fetch(`${API}/memory`, {

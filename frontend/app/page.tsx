@@ -5,6 +5,7 @@ import {
   ask,
   clearMemories,
   clearToken,
+  deleteDoc,
   getMemories,
   getToken,
   login,
@@ -193,6 +194,15 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     }
   }
 
+  async function handleRemoveDoc(docId: string) {
+    setDocs((d) => d.filter((x) => x.doc_id !== docId));
+    try {
+      await deleteDoc(docId);
+    } catch {
+      // already removed from UI; silently ignore
+    }
+  }
+
   async function openMemory() {
     setMemoryOpen(true);
     setMemBusy(true);
@@ -269,22 +279,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
           ) : (
             <ul className="space-y-1">
               {docs.map((d) => (
-                <li
-                  key={d.doc_id}
-                  className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs"
-                  style={{ background: "var(--bg)", border: "1px solid var(--border)" }}
-                >
-                  <svg className="mt-0.5 shrink-0" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                    <polyline points="14,2 14,8 20,8" />
-                  </svg>
-                  <div className="min-w-0">
-                    <p className="truncate font-medium" style={{ color: "var(--text)" }}>
-                      {d.filename}
-                    </p>
-                    <p style={{ color: "var(--text-muted)" }}>{d.chunk_count} chunks</p>
-                  </div>
-                </li>
+                <DocItem key={d.doc_id} doc={d} onRemove={handleRemoveDoc} />
               ))}
             </ul>
           )}
@@ -379,6 +374,54 @@ function DropZone({
       <span style={{ color: "var(--surface-2)" }}>or click to browse</span>
       <input type="file" accept=".pdf,.txt,.md" className="hidden" onChange={(e) => { if (e.target.files?.[0]) onFile(e.target.files[0]); e.target.value = ""; }} />
     </label>
+  );
+}
+
+// ─── Doc Item ─────────────────────────────────────────────────────────────────
+
+function DocItem({ doc, onRemove }: { doc: DocFile; onRemove: (id: string) => void }) {
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <li
+      className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs group"
+      style={{
+        background: hovered ? "var(--surface-2)" : "var(--bg)",
+        border: "1px solid var(--border)",
+        transition: "background 150ms",
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <svg className="shrink-0 mt-0.5" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14,2 14,8 20,8" />
+      </svg>
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-medium" style={{ color: "var(--text)" }}>
+          {doc.filename}
+        </p>
+        <p style={{ color: "var(--text-muted)" }}>{doc.chunk_count} chunks</p>
+      </div>
+      <button
+        onClick={() => onRemove(doc.doc_id)}
+        className="shrink-0 rounded-md w-5 h-5 flex items-center justify-center transition-all cursor-pointer"
+        style={{
+          opacity: hovered ? 1 : 0,
+          background: "transparent",
+          color: "#F87171",
+          pointerEvents: hovered ? "auto" : "none",
+        }}
+        title="Remove document"
+        onMouseOver={(e) => ((e.currentTarget as HTMLElement).style.background = "rgba(248,113,113,0.15)")}
+        onMouseOut={(e) => ((e.currentTarget as HTMLElement).style.background = "transparent")}
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+    </li>
   );
 }
 

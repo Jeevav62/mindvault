@@ -115,5 +115,17 @@ class PineconeStore(VectorStore):
             )
         return hits
 
+    async def delete_doc(self, user_id: str, doc_id: str) -> None:
+        try:
+            index = self._get_index()
+            await asyncio.to_thread(
+                index.delete,
+                filter={"user_id": {"$eq": user_id}, "doc_id": {"$eq": doc_id}},
+            )
+        except VectorStoreError:
+            raise
+        except Exception as exc:
+            raise VectorStoreError(str(exc), store=self.name) from exc
+
     async def aclose(self) -> None:
         self._index = None

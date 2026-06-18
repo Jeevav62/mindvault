@@ -51,6 +51,17 @@ class VectorStoreRouter:
                 logger.warning("vectorstore %s search failed: %s — trying next", store.name, exc)
         raise AllStoresFailed("all vector stores failed search")
 
+    async def delete_doc(self, user_id: str, doc_id: str) -> None:
+        for store in self._stores:
+            try:
+                await store.delete_doc(user_id, doc_id)
+                if store.name != self._stores[0].name:
+                    logger.info("vectorstore fallback: used %s for delete_doc", store.name)
+                return
+            except VectorStoreError as exc:
+                logger.warning("vectorstore %s delete_doc failed: %s — trying next", store.name, exc)
+        raise AllStoresFailed("all vector stores failed delete_doc")
+
     async def aclose(self) -> None:
         for store in self._stores:
             try:

@@ -107,6 +107,23 @@ class QdrantStore(VectorStore):
             )
         return hits
 
+    async def delete_doc(self, user_id: str, doc_id: str) -> None:
+        s = get_settings()
+        try:
+            await self._get_client().delete(
+                collection_name=s.qdrant_collection,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+                            models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id)),
+                        ]
+                    )
+                ),
+            )
+        except Exception as exc:
+            raise VectorStoreError(str(exc), store=self.name) from exc
+
     async def aclose(self) -> None:
         if self._client is not None:
             await self._client.close()
