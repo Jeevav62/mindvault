@@ -218,3 +218,48 @@ h1, h2, h3, h4 {
   backdrop-filter: blur(16px) saturate(1.4);
   -webkit-backdrop-filter: blur(16px) saturate(1.4);
 }
+
+/* ── Light theme ─────────────────────────────────────────── */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg:          #F5F6FA00;
+  --bg-solid:    #F5F6FA;
+  --surface:     #FFFFFF;
+  --surface-2:   #F0F1F8;
+  --surface-3:   #E5E7F5;
+  --surface-hover: rgba(0,0,0,0.04);
+  --accent:      #16A34A;
+  --accent-2:    #22C55E;
+  --accent-dim:  rgba(22,163,74,0.10);
+  --accent-glow: rgba(22,163,74,0.18);
+  --accent-border: rgba(22,163,74,0.28);
+  --text:        #0D0E1C;
+  --text-muted:  #6B7280;
+  --text-subtle: #9CA3AF;
+  --border:        rgba(0,0,0,0.08);
+  --border-strong: rgba(0,0,0,0.12);
+  --shadow-sm: 0 2px 8px  rgba(0,0,0,0.07);
+  --shadow-md: 0 4px 20px rgba(0,0,0,0.09);
+  --shadow-lg: 0 8px 40px rgba(0,0,0,0.12);
+  --shadow-accent: 0 0 20px rgba(22,163,74,0.15);
+}
+
+[data-theme="light"] .glass {
+  background: rgba(255,255,255,0.88);
+}
+
+[data-theme="light"] .shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 50%,
+    var(--surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s infinite;
+}
+
+[data-theme="light"] ::selection { background: var(--accent); color: #fff; }
+
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: var(--surface-3); }
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: var(--text-subtle); }
