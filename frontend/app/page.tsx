@@ -18,6 +18,8 @@ type Msg = {
   citations?: Citation[];
   mode?: ChatMode;
   streaming?: boolean;
+  isError?: boolean;
+  retryPayload?: { question: string; attachText?: string | null; attachName?: string | null; imageData?: string | null; imageMime?: string };
 };
 
 type Session = {
@@ -624,34 +626,28 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
     if (t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 140) + "px"; }
   }
 
-  async function send(e: React.FormEvent) {
-    e.preventDefault();
-    const q = input.trim();
-    if (!q || busy) return;
-    setInput(""); setBusy(true);
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
-
-    // Capture and clear attachment state before async work
-    const pendingAttach = attach;
-    const pendingImage = attachImage;
-    setAttach(null);
-    setAttachImage(null);
-
-    const isFirst = messages.length === 0;
-
-    const userLabel = pendingImage
-      ? `${q} [📎 ${pendingImage.name}]`
-      : pendingAttach
-        ? `${q} [📎 ${pendingAttach.name}]`
-        : q;
+  async function doSend(
+    q: string,
+    pendingAttach: { text: string; name: string } | null,
+    pendingImage: { data: string; mime: string; name: string } | null,
+    startingMessages: Msg[],
+  ) {
+    setBusy(true);
+    const isFirst = startingMessages.length === 0;
+    const retryPayload = { question: q, attachText: pendingAttach?.text, attachName: pendingAttach?.name, imageData: pendingImage?.data, imageMime: pendingImage?.mime };
+    const userLabel = pendingImage ? `${q} [📎 ${pendingImage.name}]` : pendingAttach ? `${q} [📎 ${pendingAttach.name}]` : q;
     const userMsg: Msg = { role: "user", text: userLabel, mode: session.mode };
-    const baseMessages = [...messages, userMsg];
+    const baseMessages = [...startingMessages, userMsg];
 
-    setMessages(m => [...m, userMsg, { role: "assistant", text: "", citations: [], mode: session.mode, streaming: true }]);
+    setMessages([...baseMessages, { role: "assistant", text: "", citations: [], mode: session.mode, streaming: true }]);
 
-    const history: HistoryMessage[] = messages.slice(-20).map(m => ({ role: m.role, content: m.text }));
+    const history: HistoryMessage[] = startingMessages.slice(-20).map(m => ({ role: m.role, content: m.text }));
     let accText = "";
     let accCitations: Citation[] = [];
+
+    const mkError = (msg: string): Msg => ({
+      role: "assistant", text: `⚠ ${msg}`, mode: session.mode, isError: true, retryPayload,
+    });
 
     try {
       await askStream(
@@ -672,7 +668,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
           });
         },
         errMsg => {
-          const errMsgs = [...baseMessages, { role: "assistant" as const, text: `⚠ ${errMsg}`, mode: session.mode }];
+          const errMsgs = [...baseMessages, mkError(errMsg)];
           setMessages(errMsgs);
           const t = isFirst ? q.slice(0, 48) : session.title;
           onSessionUpdate({ ...session, title: t, messages: errMsgs, updatedAt: Date.now() });
@@ -695,12 +691,36 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
         pendingImage?.mime ?? "image/jpeg",
       );
     } catch (err: any) {
-      const errMsgs = [...baseMessages, { role: "assistant" as const, text: `⚠ ${err.message}`, mode: session.mode }];
+      const errMsgs = [...baseMessages, mkError(err.message)];
       setMessages(errMsgs);
       const t = isFirst ? q.slice(0, 48) : session.title;
       onSessionUpdate({ ...session, title: t, messages: errMsgs, updatedAt: Date.now() });
       setBusy(false);
     }
+  }
+
+  async function send(e: React.FormEvent) {
+    e.preventDefault();
+    const q = input.trim();
+    if (!q || busy) return;
+    setInput("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    const pendingAttach = attach;
+    const pendingImage = attachImage;
+    setAttach(null);
+    setAttachImage(null);
+    await doSend(q, pendingAttach, pendingImage, messages);
+  }
+
+  function retryMsg(payload: NonNullable<Msg["retryPayload"]>) {
+    if (busy) return;
+    const pendingAttach = payload.attachText && payload.attachName
+      ? { text: payload.attachText, name: payload.attachName }
+      : null;
+    const pendingImage = payload.imageData
+      ? { data: payload.imageData, mime: payload.imageMime ?? "image/jpeg", name: "image" }
+      : null;
+    doSend(payload.question, pendingAttach, pendingImage, messages.slice(0, -2));
   }
 
   const subtitle = session.mode === "personal"
@@ -746,7 +766,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
           <EmptyState mode={session.mode} />
         ) : (
           messages.map((m, i) => (
-            <MessageBubble key={i} msg={m} index={i} onCitationClick={setActiveCitation} />
+            <MessageBubble key={i} msg={m} index={i} onCitationClick={setActiveCitation} onRetry={retryMsg} />
           ))
         )}
         <div ref={bottomRef} />
@@ -886,8 +906,9 @@ function EmptyState({ mode }: { mode: ChatMode }) {
 
 // ─── Message Bubble ───────────────────────────────────────────────────────────
 
-function MessageBubble({ msg, index, onCitationClick }: {
+function MessageBubble({ msg, index, onCitationClick, onRetry }: {
   msg: Msg; index: number; onCitationClick: (c: Citation) => void;
+  onRetry?: (p: NonNullable<Msg["retryPayload"]>) => void;
 }) {
   const delay = `${Math.min(index * 30, 120)}ms`;
 
@@ -970,6 +991,21 @@ function MessageBubble({ msg, index, onCitationClick }: {
               </button>
             ))}
           </div>
+        )}
+
+        {/* Retry button on errors */}
+        {msg.isError && msg.retryPayload && onRetry && (
+          <button
+            onClick={() => onRetry(msg.retryPayload!)}
+            className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs cursor-pointer anim-fade btn-icon"
+            style={{ color: "#F87171", border: "1px solid rgba(248,113,113,0.3)", background: "rgba(248,113,113,0.07)", transition: "all 150ms" }}
+            onMouseOver={e => { const el = e.currentTarget as HTMLElement; el.style.background = "rgba(248,113,113,0.14)"; el.style.borderColor = "rgba(248,113,113,0.5)"; }}
+            onMouseOut={e => { const el = e.currentTarget as HTMLElement; el.style.background = "rgba(248,113,113,0.07)"; el.style.borderColor = "rgba(248,113,113,0.3)"; }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <polyline points="1,4 1,10 7,10"/><path d="M3.51 15a9 9 0 1 0 .49-3.84"/>
+            </svg>
+            Retry
+          </button>
         )}
       </div>
     </div>
