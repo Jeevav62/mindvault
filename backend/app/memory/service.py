@@ -27,16 +27,21 @@ def _get_memory() -> Memory:
         return _memory_instance
 
     s = get_settings()
+    groq_keys = _csv(s.groq_api_keys)
     gemini_keys = _csv(s.gemini_api_keys)
+
+    # Use the LAST Groq key for mem0 extraction so it has its own TPM budget
+    # separate from chat traffic (which cycles keys 0..N-1 first).
+    mem0_groq_key = groq_keys[-1] if groq_keys else ""
 
     base = {
         "llm": {
-            "provider": "gemini",
+            "provider": "groq",
             "config": {
-                # gemini-1.5-flash: 15 RPM / 1M TPM on free tier.
-                # gemini-2.0-flash has limit=0 on free tier (not available).
-                "model": "gemini-1.5-flash",
-                "api_key": gemini_keys[0] if gemini_keys else "",
+                # llama-3.1-8b-instant: 6K TPM per key on free tier.
+                # Use dedicated last key so chat rotation doesn't starve extraction.
+                "model": "llama-3.1-8b-instant",
+                "api_key": mem0_groq_key,
             },
         },
         "embedder": {
