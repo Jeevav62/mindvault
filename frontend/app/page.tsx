@@ -162,6 +162,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [memories, setMemories] = useState<{ id: string; memory: string }[]>([]);
   const [memBusy, setMemBusy] = useState(false);
+  const [memRefreshing, setMemRefreshing] = useState(false);
 
   useEffect(() => { saveSessions(uid, sessions); }, [sessions]);
   useEffect(() => { localStorage.setItem(`rag.docs.${uid}`, JSON.stringify(docs)); }, [docs]);
@@ -212,9 +213,14 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   }
 
   async function openMemory() {
-    setMemoryOpen(true); setMemBusy(true);
-    try { const r = await getMemories(); setMemories(r.items); } catch { setMemories([]); }
-    finally { setMemBusy(false); }
+    setMemoryOpen(true);
+    // If we have cached memories, show them instantly — refresh silently in background.
+    // If empty cache, show spinner (first open).
+    if (memories.length === 0) setMemBusy(true);
+    else setMemRefreshing(true);
+    try { const r = await getMemories(); setMemories(r.items); }
+    catch { /* keep stale data on error */ }
+    finally { setMemBusy(false); setMemRefreshing(false); }
   }
 
   const docFilter = selectedDocIds.size > 0 ? [...selectedDocIds] : null;
@@ -311,7 +317,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
       )}
 
       {memoryOpen && (
-        <MemoryDrawer memories={memories} busy={memBusy} onClose={() => setMemoryOpen(false)}
+        <MemoryDrawer memories={memories} busy={memBusy} refreshing={memRefreshing} onClose={() => setMemoryOpen(false)}
           onClear={async () => { try { await clearMemories(); setMemories([]); } catch {} }} />
       )}
     </div>
@@ -620,14 +626,17 @@ function CitationDrawer({ citation, onClose }: { citation: Citation; onClose: ()
 
 // ─── Memory Drawer ────────────────────────────────────────────────────────────
 
-function MemoryDrawer({ memories, busy, onClose, onClear }: { memories: { id: string; memory: string }[]; busy: boolean; onClose: () => void; onClear: () => void }) {
+function MemoryDrawer({ memories, busy, refreshing, onClose, onClear }: { memories: { id: string; memory: string }[]; busy: boolean; refreshing: boolean; onClose: () => void; onClear: () => void }) {
   return (
     <>
       <div className="fixed inset-0 z-40" style={{ background: "rgba(0,0,0,.5)", backdropFilter: "blur(4px)" }} onClick={onClose} />
       <aside className="fixed right-0 top-0 h-full z-50 flex flex-col w-96" style={{ background: "var(--surface)", borderLeft: "1px solid var(--border)", animation: "slideInDrawer 220ms cubic-bezier(.22,1,.36,1)", boxShadow: "-8px 0 32px rgba(0,0,0,.3)" }}>
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
           <div>
-            <h3 className="text-sm font-semibold" style={{ fontFamily: "JetBrains Mono, monospace" }}>Long-term Memory</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold" style={{ fontFamily: "JetBrains Mono, monospace" }}>Long-term Memory</h3>
+              {refreshing && <div className="w-3 h-3 rounded-full border-2 animate-spin" style={{ borderColor: "var(--surface-2)", borderTopColor: "var(--accent)" }} />}
+            </div>
             <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{memories.length} facts stored</p>
           </div>
           <div className="flex items-center gap-2">
