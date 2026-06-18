@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     pinecone_api_key: str = ""
     pinecone_index: str = "rag-documents"
     pinecone_host: str = ""
+    mem0_collection: str = "rag_memories"
 
     # Storage
     blob_store_dir: str = "./data/blobs"
@@ -57,6 +58,9 @@ class Settings(BaseSettings):
     llm_provider_order: list[str] = Field(default_factory=lambda: ["groq", "cerebras"])
     groq_api_keys: str = ""   # CSV — split with _csv() at use site
     groq_model: str = "llama-3.3-70b-versatile"
+    # CSV of Groq fallback models tried in order after groq_model hits TPM.
+    # Each model has its own TPM bucket, so rotation avoids rate-limit stalls.
+    groq_fallback_models: str = "llama-3.1-8b-instant,gemma2-9b-it"
     cerebras_api_keys: str = ""
     cerebras_model: str = "llama-3.3-70b"
 
