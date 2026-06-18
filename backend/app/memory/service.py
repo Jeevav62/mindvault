@@ -33,9 +33,9 @@ def _get_memory() -> Memory:
         "llm": {
             "provider": "gemini",
             "config": {
-                # Gemini Flash for mem0 extraction — free tier has 1M TPM vs Groq's 6K.
-                # Groq llama-3.1-8b-instant only 6K TPM; extraction prompt alone hits ~4K.
-                "model": "gemini-2.0-flash",
+                # gemini-1.5-flash: 15 RPM / 1M TPM on free tier.
+                # gemini-2.0-flash has limit=0 on free tier (not available).
+                "model": "gemini-1.5-flash",
                 "api_key": gemini_keys[0] if gemini_keys else "",
             },
         },
