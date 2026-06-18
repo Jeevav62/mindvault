@@ -9,7 +9,7 @@ from app.storage import store_blob
 from app.vectorstore import Chunk, ensure_collection, upsert_chunks
 
 from .chunk import chunk_text
-from .extract import extract_text
+from .extract import extract_pages
 
 
 @dataclass
@@ -28,19 +28,25 @@ async def ingest_document(user_id: str, filename: str, data: bytes) -> IngestRes
     # 1. Encrypt + persist the original bytes at rest.
     blob_path = store_blob(user_id, data)
 
-    # 2. Extract text (raises UnsupportedFileType for unknown formats).
-    text = extract_text(filename, data)
+    # 2. Extract text per page (raises UnsupportedFileType for unknown formats).
+    pages = extract_pages(filename, data)
 
-    # 3. Chunk.
-    pieces = chunk_text(text)
-    if not pieces:
-        raise EmptyDocument(filename)
-
+    # 3. Chunk per page, preserving page number on each chunk.
     doc_id = str(uuid.uuid4())
-    chunks = [
-        Chunk(text=p, doc_id=doc_id, chunk_index=i, source=filename)
-        for i, p in enumerate(pieces)
-    ]
+    chunks: list[Chunk] = []
+    for page_num, page_text in pages:
+        for piece in chunk_text(page_text):
+            chunks.append(
+                Chunk(
+                    text=piece,
+                    doc_id=doc_id,
+                    chunk_index=len(chunks),
+                    source=filename,
+                    page_number=page_num,
+                )
+            )
+    if not chunks:
+        raise EmptyDocument(filename)
 
     # 4. Embed via the fallback router (document input type).
     router = get_embedding_router()

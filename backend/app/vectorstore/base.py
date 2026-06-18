@@ -12,6 +12,7 @@ class Chunk:
     chunk_index: int
     source: str
     modality: str = "text"
+    page_number: int | None = None
 
 
 @dataclass
@@ -21,6 +22,7 @@ class Hit:
     doc_id: str
     chunk_index: int
     score: float
+    page_number: int | None = None
 
 
 class VectorStoreError(Exception):

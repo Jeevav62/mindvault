@@ -59,6 +59,7 @@ class QdrantStore(VectorStore):
                     "chunk_text": ch.text,
                     "source": ch.source,
                     "modality": ch.modality,
+                    "page_number": ch.page_number,
                 },
             )
             for ch, vec in zip(chunks, vectors)
@@ -101,6 +102,7 @@ class QdrantStore(VectorStore):
                     doc_id=payload.get("doc_id", ""),
                     chunk_index=payload.get("chunk_index", 0),
                     score=p.score,
+                    page_number=payload.get("page_number"),
                 )
             )
         return hits
