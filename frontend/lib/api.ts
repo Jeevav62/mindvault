@@ -147,6 +147,20 @@ export async function ask(question: string, mode: ChatMode = "doc", docIds: stri
 
 export type HistoryMessage = { role: "user" | "assistant"; content: string };
 
+export async function extractText(file: File): Promise<{ text: string; filename: string; truncated: boolean }> {
+  const doFetch = () => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return fetch(`${API}/ingest/extract-text`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${getToken()}` },
+      body: fd,
+    });
+  };
+  const res = await doFetch();
+  return json<{ text: string; filename: string; truncated: boolean }>(res, doFetch);
+}
+
 export async function askStream(
   question: string,
   mode: ChatMode,
@@ -156,6 +170,10 @@ export async function askStream(
   onError: (msg: string) => void,
   onDone: () => void,
   history: HistoryMessage[] = [],
+  attachmentText?: string | null,
+  attachmentName?: string | null,
+  imageData?: string | null,
+  imageMime?: string,
 ): Promise<void> {
   const makeReq = () =>
     fetch(`${API}/chat/stream`, {
@@ -164,7 +182,13 @@ export async function askStream(
         "Content-Type": "application/json",
         Authorization: `Bearer ${getToken()}`,
       },
-      body: JSON.stringify({ question, mode, doc_ids: docIds, history }),
+      body: JSON.stringify({
+        question, mode, doc_ids: docIds, history,
+        attachment_text: attachmentText ?? null,
+        attachment_name: attachmentName ?? null,
+        image_data: imageData ?? null,
+        image_mime: imageMime ?? "image/jpeg",
+      }),
     });
 
   let res = await makeReq();

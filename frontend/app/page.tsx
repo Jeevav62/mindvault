@@ -5,8 +5,8 @@ import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  askStream, clearMemories, clearToken, deleteDoc, getMemories,
-  getToken, getUserId, login, saveToken, signup, uploadDoc,
+  askStream, clearMemories, clearToken, deleteDoc, extractText,
+  getMemories, getToken, getUserId, login, saveToken, signup, uploadDoc,
   type ChatMode, type Citation, type HistoryMessage,
 } from "@/lib/api";
 
@@ -205,6 +205,17 @@ function Spinner({ size = 16, color = "currentColor" }: { size?: number; color?:
 
 function AppLayout({ onLogout }: { onLogout: () => void }) {
   const uid = getUserId() ?? "anon";
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("rag.theme") as "dark" | "light" | null;
+    if (saved) setTheme(saved);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("rag.theme", theme);
+  }, [theme]);
 
   const [sessions, setSessions] = useState<Session[]>(() => {
     if (typeof window === "undefined") return [newSession("doc")];
@@ -404,6 +415,17 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
               <span>{item.label}</span>
             </button>
           ))}
+          {/* Theme toggle */}
+          <button onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}
+            className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-xs cursor-pointer"
+            style={{ color: "var(--text-muted)", transition: "background 140ms, color 140ms" }}
+            onMouseOver={e => { (e.currentTarget as HTMLElement).style.background = "var(--surface-2)"; (e.currentTarget as HTMLElement).style.color = "var(--text)"; }}
+            onMouseOut={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "var(--text-muted)"; }}>
+            {theme === "dark"
+              ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+              : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>}
+            <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+          </button>
         </div>
       </aside>
 
@@ -547,8 +569,12 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
+  const [attach, setAttach] = useState<{ text: string; name: string } | null>(null);
+  const [attachImage, setAttachImage] = useState<{ data: string; mime: string; name: string } | null>(null);
+  const [attachBusy, setAttachBusy] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const sessionIdRef = useRef(session.id);
 
   useEffect(() => {
@@ -565,6 +591,34 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
     onNewSession(mode);
   }
 
+  async function handleAttachFile(file: File) {
+    const isImage = file.type.startsWith("image/");
+    setAttachBusy(true);
+    setAttach(null);
+    setAttachImage(null);
+    try {
+      if (isImage) {
+        await new Promise<void>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const dataUrl = e.target!.result as string;
+            const base64 = dataUrl.split(",")[1];
+            setAttachImage({ data: base64, mime: file.type, name: file.name });
+            resolve();
+          };
+          reader.readAsDataURL(file);
+        });
+      } else {
+        const result = await extractText(file);
+        setAttach({ text: result.text, name: result.filename });
+      }
+    } catch (err: any) {
+      console.error("attach failed:", err.message);
+    } finally {
+      setAttachBusy(false);
+    }
+  }
+
   function autoResizeTextarea() {
     const t = textareaRef.current;
     if (t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 140) + "px"; }
@@ -577,9 +631,21 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
     setInput(""); setBusy(true);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
+    // Capture and clear attachment state before async work
+    const pendingAttach = attach;
+    const pendingImage = attachImage;
+    setAttach(null);
+    setAttachImage(null);
+
     const isFirst = messages.length === 0;
     const autoTitle = isFirst ? q.slice(0, 48) + (q.length > 48 ? "…" : "") : session.title;
-    const userMsg: Msg = { role: "user", text: q, mode: session.mode };
+
+    const userLabel = pendingImage
+      ? `${q} [📎 ${pendingImage.name}]`
+      : pendingAttach
+        ? `${q} [📎 ${pendingAttach.name}]`
+        : q;
+    const userMsg: Msg = { role: "user", text: userLabel, mode: session.mode };
     const baseMessages = [...messages, userMsg];
 
     setMessages(m => [...m, userMsg, { role: "assistant", text: "", citations: [], mode: session.mode, streaming: true }]);
@@ -619,6 +685,10 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
           setBusy(false);
         },
         history,
+        pendingAttach?.text ?? null,
+        pendingAttach?.name ?? null,
+        pendingImage?.data ?? null,
+        pendingImage?.mime ?? "image/jpeg",
       );
     } catch (err: any) {
       const errMsgs = [...baseMessages, { role: "assistant" as const, text: `⚠ ${err.message}`, mode: session.mode }];
@@ -679,14 +749,67 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
 
       {/* ── Input ── */}
       <div className="px-6 py-4 shrink-0 glass" style={{ borderTop: "1px solid var(--border)" }}>
+        {/* Attachment preview chips */}
+        {(attach || attachImage || attachBusy) && (
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            {attachBusy && (
+              <div className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs"
+                style={{ background: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
+                <Spinner size={10} color="currentColor" />
+                <span>Reading file…</span>
+              </div>
+            )}
+            {attach && !attachBusy && (
+              <div className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs anim-fade"
+                style={{ background: "var(--accent-dim)", border: "1px solid var(--accent-border)", color: "var(--accent)" }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+                <span className="max-w-[180px] truncate">{attach.name}</span>
+                <button onClick={() => setAttach(null)} className="cursor-pointer hover:opacity-70 ml-0.5">&times;</button>
+              </div>
+            )}
+            {attachImage && !attachBusy && (
+              <div className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs anim-fade"
+                style={{ background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.28)", color: "#818CF8" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={`data:${attachImage.mime};base64,${attachImage.data}`}
+                  alt="" className="w-4 h-4 rounded object-cover" />
+                <span className="max-w-[160px] truncate">{attachImage.name}</span>
+                <button onClick={() => setAttachImage(null)} className="cursor-pointer hover:opacity-70 ml-0.5">&times;</button>
+              </div>
+            )}
+          </div>
+        )}
         <form onSubmit={send}>
           <div className="input-wrap flex items-end gap-3 rounded-2xl px-4 py-3"
             style={{ background: "var(--surface)", border: "1px solid var(--border-strong)", transition: "border-color 200ms, box-shadow 200ms" }}>
+            {/* Attach button */}
+            <button type="button"
+              disabled={attachBusy || busy}
+              onClick={() => fileInputRef.current?.click()}
+              className="shrink-0 rounded-lg w-7 h-7 flex items-center justify-center cursor-pointer btn-icon"
+              title="Attach file or image"
+              style={{
+                color: (attach || attachImage) ? "var(--accent)" : "var(--text-muted)",
+                background: (attach || attachImage) ? "var(--accent-dim)" : "transparent",
+                border: "1px solid transparent",
+                transition: "all 150ms",
+              }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+              </svg>
+            </button>
+            <input ref={fileInputRef} type="file" className="hidden"
+              accept="image/*,.pdf,.txt,.md"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleAttachFile(f); e.target.value = ""; }} />
             <textarea
               ref={textareaRef}
               className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed"
               style={{ color: "var(--text)", minHeight: "24px", maxHeight: "140px" }}
-              placeholder={session.mode === "doc" ? "Ask about your documents…" : "Chat freely…"}
+              placeholder={
+                attachImage ? "Ask about this image…" :
+                attach ? "Ask about this file…" :
+                session.mode === "doc" ? "Ask about your documents…" : "Chat freely…"
+              }
               value={input} rows={1}
               onChange={e => { setInput(e.target.value); autoResizeTextarea(); }}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e as any); } }}
