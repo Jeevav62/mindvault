@@ -126,4 +126,4 @@ async def get_all(user_id: str) -> list[dict]:
 
 async def wipe(user_id: str) -> None:
     mem = _get_memory()
-    await asyncio.to_thread(mem.delete_all, filters={"user_id": user_id})
+    await asyncio.to_thread(mem.delete_all, user_id=user_id)
