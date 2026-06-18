@@ -73,21 +73,18 @@ class QdrantStore(VectorStore):
         return len(points)
 
     async def search(
-        self, user_id: str, query_vector: list[float], *, top_k: int = 5
+        self, user_id: str, query_vector: list[float], *, top_k: int = 5, doc_ids: list[str] | None = None
     ) -> list[Hit]:
         s = get_settings()
+        must = [models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id))]
+        if doc_ids:
+            must.append(models.FieldCondition(key="doc_id", match=models.MatchAny(any=doc_ids)))
         try:
             res = await self._get_client().query_points(
                 collection_name=s.qdrant_collection,
                 query=query_vector,
                 limit=top_k,
-                query_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="user_id", match=models.MatchValue(value=user_id)
-                        )
-                    ]
-                ),
+                query_filter=models.Filter(must=must),
                 with_payload=True,
             )
         except Exception as exc:

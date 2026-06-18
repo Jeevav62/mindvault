@@ -34,6 +34,17 @@ export function getRefreshToken(): string | null {
   return typeof window !== "undefined" ? localStorage.getItem(REFRESH_KEY) : null;
 }
 
+export function getUserId(): string | null {
+  const token = getToken();
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return payload.sub || null;
+  } catch {
+    return null;
+  }
+}
+
 async function tryRefresh(): Promise<boolean> {
   const rt = getRefreshToken();
   if (!rt) return false;
@@ -109,20 +120,6 @@ export async function uploadDoc(file: File) {
   return json<{ doc_id: string; filename: string; chunk_count: number }>(res, doFetch);
 }
 
-export async function ask(question: string, mode: ChatMode = "doc") {
-  const doFetch = () =>
-    fetch(`${API}/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${getToken()}`,
-      },
-      body: JSON.stringify({ question, mode }),
-    });
-  const res = await doFetch();
-  return json<{ answer: string; citations: Citation[] }>(res, doFetch);
-}
-
 export async function deleteDoc(docId: string) {
   const doFetch = () =>
     fetch(`${API}/ingest/${encodeURIComponent(docId)}`, {
@@ -132,6 +129,82 @@ export async function deleteDoc(docId: string) {
   const res = await doFetch();
   if (res.status === 204) return;
   return json<void>(res, doFetch);
+}
+
+export async function ask(question: string, mode: ChatMode = "doc", docIds: string[] | null = null) {
+  const doFetch = () =>
+    fetch(`${API}/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${getToken()}`,
+      },
+      body: JSON.stringify({ question, mode, doc_ids: docIds }),
+    });
+  const res = await doFetch();
+  return json<{ answer: string; citations: Citation[] }>(res, doFetch);
+}
+
+export async function askStream(
+  question: string,
+  mode: ChatMode,
+  docIds: string[] | null,
+  onCitations: (citations: Citation[]) => void,
+  onToken: (token: string) => void,
+  onError: (msg: string) => void,
+  onDone: () => void,
+): Promise<void> {
+  const makeReq = () =>
+    fetch(`${API}/chat/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${getToken()}`,
+      },
+      body: JSON.stringify({ question, mode, doc_ids: docIds }),
+    });
+
+  let res = await makeReq();
+
+  if (res.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      res = await makeReq();
+    } else {
+      clearToken();
+      window.location.href = "/";
+      return;
+    }
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `Request failed (${res.status})`);
+  }
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const raw = line.slice(6).trim();
+      if (!raw) continue;
+      try {
+        const data = JSON.parse(raw);
+        if (data.type === "citations") onCitations(data.citations);
+        else if (data.type === "token") onToken(data.content);
+        else if (data.type === "error") onError(data.message);
+        else if (data.type === "done") onDone();
+      } catch { /* skip malformed event */ }
+    }
+  }
 }
 
 export async function getMemories() {

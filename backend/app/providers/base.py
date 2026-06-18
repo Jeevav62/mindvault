@@ -72,6 +72,17 @@ class LLMProvider(abc.ABC):
     ) -> str:
         """Return the assistant's text reply, or raise a ProviderError."""
 
+    async def complete_stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+    ):
+        """Yield text tokens. Default: calls complete() and yields full response at once."""
+        text = await self.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        yield text
+
 
 class EmbeddingProvider(abc.ABC):
     """A text-embedding provider."""

@@ -39,11 +39,11 @@ class VectorStoreRouter:
         raise AllStoresFailed("all vector stores failed upsert_chunks")
 
     async def search(
-        self, user_id: str, query_vector: list[float], *, top_k: int = 5
+        self, user_id: str, query_vector: list[float], *, top_k: int = 5, doc_ids: list[str] | None = None
     ) -> list[Hit]:
         for store in self._stores:
             try:
-                hits = await store.search(user_id, query_vector, top_k=top_k)
+                hits = await store.search(user_id, query_vector, top_k=top_k, doc_ids=doc_ids)
                 if store.name != self._stores[0].name:
                     logger.info("vectorstore fallback: used %s for search", store.name)
                 return hits

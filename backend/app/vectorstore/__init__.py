@@ -36,9 +36,9 @@ async def upsert_chunks(
 
 
 async def search(
-    user_id: str, query_vector: list[float], *, top_k: int = 5
+    user_id: str, query_vector: list[float], *, top_k: int = 5, doc_ids: list[str] | None = None
 ) -> list[Hit]:
-    return await _get_router().search(user_id, query_vector, top_k=top_k)
+    return await _get_router().search(user_id, query_vector, top_k=top_k, doc_ids=doc_ids)
 
 
 async def delete_doc(user_id: str, doc_id: str) -> None:

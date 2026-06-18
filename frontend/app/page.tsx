@@ -1,13 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
-  ask,
+  askStream,
   clearMemories,
   clearToken,
   deleteDoc,
   getMemories,
   getToken,
+  getUserId,
   login,
   saveToken,
   signup,
@@ -23,6 +26,7 @@ type Msg = {
   text: string;
   citations?: Citation[];
   mode?: ChatMode;
+  streaming?: boolean;
 };
 
 type DocFile = { filename: string; chunk_count: number; doc_id: string };
@@ -71,7 +75,6 @@ function AuthPage({ onAuthed }: { onAuthed: () => void }) {
       className="min-h-screen flex items-center justify-center p-6"
     >
       <div className="w-full max-w-md">
-        {/* Logo */}
         <div className="mb-8 text-center">
           <div
             className="inline-flex items-center gap-2 mb-3"
@@ -92,14 +95,10 @@ function AuthPage({ onAuthed }: { onAuthed: () => void }) {
           </p>
         </div>
 
-        {/* Card */}
         <form
           onSubmit={submit}
           className="rounded-2xl p-8 space-y-4"
-          style={{
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-          }}
+          style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
         >
           <h2
             className="text-lg font-semibold mb-1"
@@ -110,11 +109,7 @@ function AuthPage({ onAuthed }: { onAuthed: () => void }) {
 
           <input
             className="w-full rounded-lg px-4 py-2.5 text-sm outline-none transition-all"
-            style={{
-              background: "var(--bg)",
-              border: "1px solid var(--border)",
-              color: "var(--text)",
-            }}
+            style={{ background: "var(--bg)", border: "1px solid var(--border)", color: "var(--text)" }}
             onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
             onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
             type="email"
@@ -125,11 +120,7 @@ function AuthPage({ onAuthed }: { onAuthed: () => void }) {
           />
           <input
             className="w-full rounded-lg px-4 py-2.5 text-sm outline-none transition-all"
-            style={{
-              background: "var(--bg)",
-              border: "1px solid var(--border)",
-              color: "var(--text)",
-            }}
+            style={{ background: "var(--bg)", border: "1px solid var(--border)", color: "var(--text)" }}
             onFocus={(e) => (e.target.style.borderColor = "var(--accent)")}
             onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
             type="password"
@@ -148,10 +139,7 @@ function AuthPage({ onAuthed }: { onAuthed: () => void }) {
           <button
             disabled={busy}
             className="w-full rounded-lg py-2.5 text-sm font-semibold transition-all cursor-pointer"
-            style={{
-              background: busy ? "var(--surface-2)" : "var(--accent)",
-              color: busy ? "var(--text-muted)" : "#000",
-            }}
+            style={{ background: busy ? "var(--surface-2)" : "var(--accent)", color: busy ? "var(--text-muted)" : "#000" }}
           >
             {busy ? "…" : mode === "login" ? "Sign in" : "Sign up"}
           </button>
@@ -175,12 +163,29 @@ function AuthPage({ onAuthed }: { onAuthed: () => void }) {
 // ─── App Layout ───────────────────────────────────────────────────────────────
 
 function AppLayout({ onLogout }: { onLogout: () => void }) {
-  const [docs, setDocs] = useState<DocFile[]>([]);
+  const [docs, setDocs] = useState<DocFile[]>(() => {
+    if (typeof window === "undefined") return [];
+    const uid = getUserId();
+    if (!uid) return [];
+    try {
+      const stored = localStorage.getItem(`rag.docs.${uid}`);
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
+
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [memories, setMemories] = useState<{ id: string; memory: string }[]>([]);
   const [memBusy, setMemBusy] = useState(false);
+
+  // Persist doc list to localStorage whenever it changes
+  useEffect(() => {
+    const uid = getUserId();
+    if (!uid) return;
+    localStorage.setItem(`rag.docs.${uid}`, JSON.stringify(docs));
+  }, [docs]);
 
   async function handleFile(file: File) {
     setUploadStatus(`Uploading ${file.name}…`);
@@ -196,11 +201,16 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
 
   async function handleRemoveDoc(docId: string) {
     setDocs((d) => d.filter((x) => x.doc_id !== docId));
-    try {
-      await deleteDoc(docId);
-    } catch {
-      // already removed from UI; silently ignore
-    }
+    setSelectedDocIds((s) => { const n = new Set(s); n.delete(docId); return n; });
+    try { await deleteDoc(docId); } catch {}
+  }
+
+  function toggleDocSelection(docId: string) {
+    setSelectedDocIds((s) => {
+      const n = new Set(s);
+      n.has(docId) ? n.delete(docId) : n.add(docId);
+      return n;
+    });
   }
 
   async function openMemory() {
@@ -223,22 +233,18 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     } catch {}
   }
 
+  const docFilter = selectedDocIds.size > 0 ? [...selectedDocIds] : null;
+
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: "var(--bg)" }}>
       {/* Sidebar */}
       <aside
         className="flex flex-col w-64 shrink-0 h-full"
-        style={{
-          background: "var(--surface)",
-          borderRight: "1px solid var(--border)",
-        }}
+        style={{ background: "var(--surface)", borderRight: "1px solid var(--border)" }}
       >
         {/* Logo */}
         <div className="px-5 py-5" style={{ borderBottom: "1px solid var(--border)" }}>
-          <div
-            className="flex items-center gap-2"
-            style={{ fontFamily: "JetBrains Mono, monospace" }}
-          >
+          <div className="flex items-center gap-2" style={{ fontFamily: "JetBrains Mono, monospace" }}>
             <span
               className="w-7 h-7 rounded-md flex items-center justify-center text-black font-bold text-xs"
               style={{ background: "var(--accent)" }}
@@ -261,7 +267,9 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
             <p
               className="mt-2 text-xs rounded-md px-2 py-1.5"
               style={{
-                color: uploadStatus.startsWith("✓") ? "var(--accent)" : uploadStatus.startsWith("Upload failed") ? "#F87171" : "var(--text-muted)",
+                color: uploadStatus.startsWith("✓") ? "var(--accent)"
+                  : uploadStatus.startsWith("Upload failed") ? "#F87171"
+                  : "var(--text-muted)",
                 background: "var(--bg)",
               }}
             >
@@ -273,19 +281,44 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
         {/* Doc list */}
         <div className="flex-1 overflow-y-auto px-4 py-3">
           {docs.length === 0 ? (
-            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-              No documents yet.
-            </p>
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>No documents yet.</p>
           ) : (
-            <ul className="space-y-1">
-              {docs.map((d) => (
-                <DocItem key={d.doc_id} doc={d} onRemove={handleRemoveDoc} />
-              ))}
-            </ul>
+            <>
+              {selectedDocIds.size > 0 && (
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs" style={{ color: "var(--accent)" }}>
+                    {selectedDocIds.size} filtered
+                  </span>
+                  <button
+                    onClick={() => setSelectedDocIds(new Set())}
+                    className="text-xs cursor-pointer"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    clear
+                  </button>
+                </div>
+              )}
+              <ul className="space-y-1">
+                {docs.map((d) => (
+                  <DocItem
+                    key={d.doc_id}
+                    doc={d}
+                    selected={selectedDocIds.has(d.doc_id)}
+                    onRemove={handleRemoveDoc}
+                    onToggle={toggleDocSelection}
+                  />
+                ))}
+              </ul>
+              {docs.length > 1 && (
+                <p className="text-xs mt-2" style={{ color: "var(--surface-2)" }}>
+                  Check docs to filter chat
+                </p>
+              )}
+            </>
           )}
         </div>
 
-        {/* Footer actions */}
+        {/* Footer */}
         <div className="px-4 py-4 space-y-1" style={{ borderTop: "1px solid var(--border)" }}>
           <button
             onClick={openMemory}
@@ -318,7 +351,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
       </aside>
 
       {/* Chat */}
-      <ChatArea />
+      <ChatArea docFilter={docFilter} />
 
       {/* Memory drawer */}
       {memoryOpen && (
@@ -372,35 +405,56 @@ function DropZone({
         Drop PDF or TXT
       </span>
       <span style={{ color: "var(--surface-2)" }}>or click to browse</span>
-      <input type="file" accept=".pdf,.txt,.md" className="hidden" onChange={(e) => { if (e.target.files?.[0]) onFile(e.target.files[0]); e.target.value = ""; }} />
+      <input
+        type="file"
+        accept=".pdf,.txt,.md"
+        className="hidden"
+        onChange={(e) => { if (e.target.files?.[0]) onFile(e.target.files[0]); e.target.value = ""; }}
+      />
     </label>
   );
 }
 
 // ─── Doc Item ─────────────────────────────────────────────────────────────────
 
-function DocItem({ doc, onRemove }: { doc: DocFile; onRemove: (id: string) => void }) {
+function DocItem({
+  doc,
+  selected,
+  onRemove,
+  onToggle,
+}: {
+  doc: DocFile;
+  selected: boolean;
+  onRemove: (id: string) => void;
+  onToggle: (id: string) => void;
+}) {
   const [hovered, setHovered] = useState(false);
 
   return (
     <li
-      className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs group"
+      className="flex items-center gap-2 rounded-lg px-2 py-2 text-xs"
       style={{
-        background: hovered ? "var(--surface-2)" : "var(--bg)",
-        border: "1px solid var(--border)",
-        transition: "background 150ms",
+        background: selected ? "rgba(34,197,94,0.08)" : hovered ? "var(--surface-2)" : "var(--bg)",
+        border: `1px solid ${selected ? "rgba(34,197,94,0.3)" : "var(--border)"}`,
+        transition: "background 150ms, border-color 150ms",
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <svg className="shrink-0 mt-0.5" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={() => onToggle(doc.doc_id)}
+        className="cursor-pointer shrink-0"
+        style={{ accentColor: "var(--accent)", width: "12px", height: "12px" }}
+        title="Filter chat to this doc"
+      />
+      <svg className="shrink-0" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
         <polyline points="14,2 14,8 20,8" />
       </svg>
       <div className="min-w-0 flex-1">
-        <p className="truncate font-medium" style={{ color: "var(--text)" }}>
-          {doc.filename}
-        </p>
+        <p className="truncate font-medium" style={{ color: "var(--text)" }}>{doc.filename}</p>
         <p style={{ color: "var(--text-muted)" }}>{doc.chunk_count} chunks</p>
       </div>
       <button
@@ -408,7 +462,6 @@ function DocItem({ doc, onRemove }: { doc: DocFile; onRemove: (id: string) => vo
         className="shrink-0 rounded-md w-5 h-5 flex items-center justify-center transition-all cursor-pointer"
         style={{
           opacity: hovered ? 1 : 0,
-          background: "transparent",
           color: "#F87171",
           pointerEvents: hovered ? "auto" : "none",
         }}
@@ -427,40 +480,101 @@ function DocItem({ doc, onRemove }: { doc: DocFile; onRemove: (id: string) => vo
 
 // ─── Chat Area ────────────────────────────────────────────────────────────────
 
-function ChatArea() {
-  const [messages, setMessages] = useState<Msg[]>([]);
+function ChatArea({ docFilter }: { docFilter: string[] | null }) {
+  const [messages, setMessages] = useState<Msg[]>(() => {
+    if (typeof window === "undefined") return [];
+    const uid = getUserId();
+    if (!uid) return [];
+    try {
+      const stored = localStorage.getItem(`rag.chat.${uid}`);
+      if (!stored) return [];
+      return (JSON.parse(stored) as Msg[]).map((m) => ({ ...m, streaming: false }));
+    } catch { return []; }
+  });
+
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<ChatMode>("doc");
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Persist messages (exclude streaming in-progress ones, cap at 100)
+  useEffect(() => {
+    const uid = getUserId();
+    if (!uid) return;
+    const toSave = messages.filter((m) => !m.streaming).slice(-100);
+    localStorage.setItem(`rag.chat.${uid}`, JSON.stringify(toSave));
+  }, [messages]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  function clearChat() {
+    setMessages([]);
+    const uid = getUserId();
+    if (uid) localStorage.removeItem(`rag.chat.${uid}`);
+  }
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
     const q = input.trim();
     if (!q || busy) return;
     setInput("");
-    setMessages((m) => [...m, { role: "user", text: q, mode }]);
     setBusy(true);
+
+    setMessages((m) => [...m, { role: "user", text: q, mode }]);
+    setMessages((m) => [...m, { role: "assistant", text: "", citations: [], mode, streaming: true }]);
+
     try {
-      const r = await ask(q, mode);
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", text: r.answer, citations: r.citations, mode },
-      ]);
+      await askStream(
+        q, mode, docFilter,
+        (citations) =>
+          setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { ...copy[copy.length - 1], citations };
+            return copy;
+          }),
+        (token) =>
+          setMessages((m) => {
+            const copy = [...m];
+            const last = copy[copy.length - 1];
+            copy[copy.length - 1] = { ...last, text: last.text + token };
+            return copy;
+          }),
+        (errMsg) => {
+          setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { role: "assistant", text: `Error: ${errMsg}`, mode };
+            return copy;
+          });
+          setBusy(false);
+        },
+        () => {
+          setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { ...copy[copy.length - 1], streaming: false };
+            return copy;
+          });
+          setBusy(false);
+        },
+      );
     } catch (err: any) {
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", text: `Error: ${err.message}`, mode },
-      ]);
-    } finally {
+      setMessages((m) => {
+        const copy = [...m];
+        copy[copy.length - 1] = { role: "assistant", text: `Error: ${err.message}`, mode };
+        return copy;
+      });
       setBusy(false);
     }
   }
+
+  const subtitle =
+    mode === "personal"
+      ? "Free conversation with memory"
+      : docFilter
+      ? `Filtered to ${docFilter.length} doc${docFilter.length > 1 ? "s" : ""}`
+      : "Grounded on all your documents";
 
   return (
     <div className="flex flex-col flex-1 min-w-0 h-full">
@@ -470,36 +584,55 @@ function ChatArea() {
         style={{ borderBottom: "1px solid var(--border)" }}
       >
         <div>
-          <h1
-            className="text-base font-semibold"
-            style={{ fontFamily: "JetBrains Mono, monospace" }}
-          >
+          <h1 className="text-base font-semibold" style={{ fontFamily: "JetBrains Mono, monospace" }}>
             Chat
           </h1>
-          <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-            {mode === "doc" ? "Grounded on your uploaded documents" : "Free conversation with memory"}
+          <p className="text-xs mt-0.5" style={{ color: docFilter ? "var(--accent)" : "var(--text-muted)" }}>
+            {subtitle}
           </p>
         </div>
 
-        {/* Mode toggle */}
-        <div
-          className="flex rounded-lg p-1 gap-1"
-          style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
-        >
-          {(["doc", "personal"] as ChatMode[]).map((m) => (
+        <div className="flex items-center gap-2">
+          {/* Clear chat */}
+          {messages.length > 0 && (
             <button
-              key={m}
-              onClick={() => setMode(m)}
-              className="px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer"
-              style={{
-                background: mode === m ? "var(--accent)" : "transparent",
-                color: mode === m ? "#000" : "var(--text-muted)",
-                fontFamily: mode === m ? "JetBrains Mono, monospace" : undefined,
-              }}
+              onClick={clearChat}
+              className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer"
+              style={{ color: "var(--text-muted)" }}
+              title="Clear chat history"
+              onMouseOver={(e) => ((e.currentTarget as HTMLElement).style.background = "var(--surface)")}
+              onMouseOut={(e) => ((e.currentTarget as HTMLElement).style.background = "transparent")}
             >
-              {m === "doc" ? "Doc Chat" : "Personal"}
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="3,6 5,6 21,6" />
+                <path d="M19,6l-1,14a2,2,0,0,1-2,2H8a2,2,0,0,1-2-2L5,6" />
+                <path d="M10,11v6" />
+                <path d="M14,11v6" />
+                <path d="M9,6V4a1,1,0,0,1,1-1h4a1,1,0,0,1,1,1V6" />
+              </svg>
             </button>
-          ))}
+          )}
+
+          {/* Mode toggle */}
+          <div
+            className="flex rounded-lg p-1 gap-1"
+            style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
+          >
+            {(["doc", "personal"] as ChatMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className="px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer"
+                style={{
+                  background: mode === m ? "var(--accent)" : "transparent",
+                  color: mode === m ? "#000" : "var(--text-muted)",
+                  fontFamily: mode === m ? "JetBrains Mono, monospace" : undefined,
+                }}
+              >
+                {m === "doc" ? "Doc Chat" : "Personal"}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -527,14 +660,10 @@ function ChatArea() {
         )}
 
         {messages.map((m, i) => (
-          <MessageBubble
-            key={i}
-            msg={m}
-            onCitationClick={setActiveCitation}
-          />
+          <MessageBubble key={i} msg={m} onCitationClick={setActiveCitation} />
         ))}
 
-        {busy && <TypingIndicator />}
+        {busy && messages[messages.length - 1]?.streaming === false && <TypingIndicator />}
         <div ref={bottomRef} />
       </div>
 
@@ -588,10 +717,7 @@ function ChatArea() {
 
       {/* Citation drawer */}
       {activeCitation && (
-        <CitationDrawer
-          citation={activeCitation}
-          onClose={() => setActiveCitation(null)}
-        />
+        <CitationDrawer citation={activeCitation} onClose={() => setActiveCitation(null)} />
       )}
     </div>
   );
@@ -632,7 +758,53 @@ function MessageBubble({
           className="rounded-2xl rounded-tl-sm px-4 py-3 text-sm"
           style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text)" }}
         >
-          <p className="whitespace-pre-wrap leading-relaxed">{msg.text}</p>
+          <div className="prose-sm leading-relaxed" style={{ color: "var(--text)" }}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                p: ({ children }) => <p style={{ marginBottom: "8px" }} className="last:mb-0">{children}</p>,
+                ul: ({ children }) => <ul style={{ paddingLeft: "20px", marginBottom: "8px" }}>{children}</ul>,
+                ol: ({ children }) => <ol style={{ paddingLeft: "20px", marginBottom: "8px" }}>{children}</ol>,
+                li: ({ children }) => <li style={{ marginBottom: "2px" }}>{children}</li>,
+                strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                em: ({ children }) => <em style={{ fontStyle: "italic" }}>{children}</em>,
+                a: ({ href, children }) => (
+                  <a href={href} target="_blank" rel="noopener noreferrer"
+                    style={{ color: "var(--accent)", textDecoration: "underline" }}>
+                    {children}
+                  </a>
+                ),
+                blockquote: ({ children }) => (
+                  <blockquote style={{ borderLeft: "3px solid var(--accent)", paddingLeft: "12px", color: "var(--text-muted)", margin: "8px 0" }}>
+                    {children}
+                  </blockquote>
+                ),
+                code: ({ children, className }) => {
+                  const isBlock = Boolean(className?.startsWith("language-"));
+                  return isBlock ? (
+                    <pre style={{ background: "var(--bg)", padding: "12px", borderRadius: "8px", overflow: "auto", fontSize: "12px", margin: "8px 0" }}>
+                      <code style={{ fontFamily: "JetBrains Mono, monospace" }}>{children}</code>
+                    </pre>
+                  ) : (
+                    <code style={{ background: "var(--bg)", padding: "2px 5px", borderRadius: "4px", fontSize: "12px", fontFamily: "JetBrains Mono, monospace" }}>
+                      {children}
+                    </code>
+                  );
+                },
+                h1: ({ children }) => <h1 style={{ fontSize: "17px", fontWeight: 600, marginBottom: "8px", fontFamily: "JetBrains Mono, monospace" }}>{children}</h1>,
+                h2: ({ children }) => <h2 style={{ fontSize: "15px", fontWeight: 600, marginBottom: "6px", fontFamily: "JetBrains Mono, monospace" }}>{children}</h2>,
+                h3: ({ children }) => <h3 style={{ fontSize: "13px", fontWeight: 600, marginBottom: "4px" }}>{children}</h3>,
+              }}
+            >
+              {msg.text || ""}
+            </ReactMarkdown>
+            {msg.streaming && (
+              <span
+                className="inline-block w-0.5 h-3.5 ml-0.5 align-middle"
+                style={{ background: "var(--accent)", animation: "blink 1s step-end infinite" }}
+              />
+            )}
+          </div>
         </div>
         {msg.citations && msg.citations.length > 0 && (
           <div className="flex flex-wrap gap-2">
@@ -641,11 +813,7 @@ function MessageBubble({
                 key={j}
                 onClick={() => onCitationClick(c)}
                 className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs transition-all cursor-pointer"
-                style={{
-                  background: "var(--surface)",
-                  border: "1px solid var(--border)",
-                  color: "var(--text-muted)",
-                }}
+                style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-muted)" }}
                 onMouseOver={(e) => {
                   (e.currentTarget as HTMLElement).style.borderColor = "var(--accent)";
                   (e.currentTarget as HTMLElement).style.color = "var(--accent)";
@@ -659,8 +827,7 @@ function MessageBubble({
                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                   <polyline points="14,2 14,8 20,8" />
                 </svg>
-                {c.source}
-                {c.page_number ? ` · p.${c.page_number}` : ""}
+                {c.source}{c.page_number ? ` · p.${c.page_number}` : ""}
               </button>
             ))}
           </div>
@@ -690,11 +857,7 @@ function TypingIndicator() {
             <span
               key={i}
               className="w-1.5 h-1.5 rounded-full animate-bounce"
-              style={{
-                background: "var(--text-muted)",
-                animationDelay: `${i * 150}ms`,
-                animationDuration: "800ms",
-              }}
+              style={{ background: "var(--text-muted)", animationDelay: `${i * 150}ms`, animationDuration: "800ms" }}
             />
           ))}
         </div>
@@ -708,28 +871,14 @@ function TypingIndicator() {
 function CitationDrawer({ citation, onClose }: { citation: Citation; onClose: () => void }) {
   return (
     <>
-      <div
-        className="fixed inset-0 z-40"
-        style={{ background: "rgba(0,0,0,0.5)" }}
-        onClick={onClose}
-      />
+      <div className="fixed inset-0 z-40" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <aside
         className="fixed right-0 top-0 h-full z-50 flex flex-col w-96"
-        style={{
-          background: "var(--surface)",
-          borderLeft: "1px solid var(--border)",
-          animation: "slideIn 200ms ease-out",
-        }}
+        style={{ background: "var(--surface)", borderLeft: "1px solid var(--border)", animation: "slideIn 200ms ease-out" }}
       >
-        <div
-          className="flex items-center justify-between px-5 py-4"
-          style={{ borderBottom: "1px solid var(--border)" }}
-        >
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
           <div>
-            <h3
-              className="text-sm font-semibold"
-              style={{ fontFamily: "JetBrains Mono, monospace" }}
-            >
+            <h3 className="text-sm font-semibold" style={{ fontFamily: "JetBrains Mono, monospace" }}>
               Source Passage
             </h3>
             <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
@@ -755,13 +904,7 @@ function CitationDrawer({ citation, onClose }: { citation: Citation; onClose: ()
         <div className="flex-1 overflow-y-auto p-5">
           <div
             className="rounded-xl p-4 text-sm leading-relaxed"
-            style={{
-              background: "var(--bg)",
-              border: "1px solid var(--border)",
-              color: "var(--text)",
-              fontFamily: "IBM Plex Sans, sans-serif",
-              whiteSpace: "pre-wrap",
-            }}
+            style={{ background: "var(--bg)", border: "1px solid var(--border)", color: "var(--text)", fontFamily: "IBM Plex Sans, sans-serif", whiteSpace: "pre-wrap" }}
           >
             {citation.chunk_text || "No passage text available."}
           </div>
@@ -781,7 +924,10 @@ function CitationDrawer({ citation, onClose }: { citation: Citation; onClose: ()
           </div>
         </div>
       </aside>
-      <style>{`@keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }`}</style>
+      <style>{`
+        @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+      `}</style>
     </>
   );
 }
@@ -801,28 +947,14 @@ function MemoryDrawer({
 }) {
   return (
     <>
-      <div
-        className="fixed inset-0 z-40"
-        style={{ background: "rgba(0,0,0,0.5)" }}
-        onClick={onClose}
-      />
+      <div className="fixed inset-0 z-40" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <aside
         className="fixed right-0 top-0 h-full z-50 flex flex-col w-96"
-        style={{
-          background: "var(--surface)",
-          borderLeft: "1px solid var(--border)",
-          animation: "slideIn 200ms ease-out",
-        }}
+        style={{ background: "var(--surface)", borderLeft: "1px solid var(--border)", animation: "slideIn 200ms ease-out" }}
       >
-        <div
-          className="flex items-center justify-between px-5 py-4"
-          style={{ borderBottom: "1px solid var(--border)" }}
-        >
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
           <div>
-            <h3
-              className="text-sm font-semibold"
-              style={{ fontFamily: "JetBrains Mono, monospace" }}
-            >
+            <h3 className="text-sm font-semibold" style={{ fontFamily: "JetBrains Mono, monospace" }}>
               Long-term Memory
             </h3>
             <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
@@ -859,10 +991,8 @@ function MemoryDrawer({
         <div className="flex-1 overflow-y-auto p-5">
           {busy ? (
             <div className="flex items-center justify-center py-12">
-              <div
-                className="w-5 h-5 rounded-full border-2 animate-spin"
-                style={{ borderColor: "var(--surface-2)", borderTopColor: "var(--accent)" }}
-              />
+              <div className="w-5 h-5 rounded-full border-2 animate-spin"
+                style={{ borderColor: "var(--surface-2)", borderTopColor: "var(--accent)" }} />
             </div>
           ) : memories.length === 0 ? (
             <div className="text-center py-12">
@@ -876,11 +1006,7 @@ function MemoryDrawer({
                 <li
                   key={m.id}
                   className="rounded-lg px-4 py-3 text-sm"
-                  style={{
-                    background: "var(--bg)",
-                    border: "1px solid var(--border)",
-                    color: "var(--text)",
-                  }}
+                  style={{ background: "var(--bg)", border: "1px solid var(--border)", color: "var(--text)" }}
                 >
                   {m.memory}
                 </li>

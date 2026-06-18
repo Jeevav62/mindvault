@@ -12,7 +12,7 @@ auth) abort immediately — failing over would hit the same error everywhere.
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable, Generic, TypeVar
+from typing import AsyncIterator, Awaitable, Callable, Generic, TypeVar
 
 from .base import ProviderError
 
@@ -36,6 +36,28 @@ class FallbackRouter(Generic[P]):
     @property
     def primary(self) -> P:
         return self.providers[0]
+
+    async def run_stream(
+        self, op: Callable[[P], "AsyncIterator[str]"]
+    ) -> "AsyncIterator[str]":
+        errors: list[str] = []
+        for provider in self.providers:
+            name = getattr(provider, "name", provider.__class__.__name__)
+            try:
+                async for token in op(provider):
+                    yield token
+                if errors:
+                    logger.info("[%s] stream served by fallback '%s'", self.kind, name)
+                return
+            except ProviderError as exc:
+                errors.append(f"{name}: {exc}")
+                if not exc.retryable:
+                    raise
+                logger.warning("[%s] '%s' stream failed (%s), trying next", self.kind, name, exc)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{name}: unexpected {exc!r}")
+                logger.warning("[%s] '%s' unexpected stream error, trying next", self.kind, name)
+        raise AllProvidersFailed(f"all {self.kind} providers stream failed: {'; '.join(errors)}")
 
     async def run(self, op: Callable[[P], Awaitable[R]]) -> R:
         errors: list[str] = []

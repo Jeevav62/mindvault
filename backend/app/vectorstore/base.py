@@ -46,7 +46,7 @@ class VectorStore(ABC):
 
     @abstractmethod
     async def search(
-        self, user_id: str, query_vector: list[float], *, top_k: int = 5
+        self, user_id: str, query_vector: list[float], *, top_k: int = 5, doc_ids: list[str] | None = None
     ) -> list[Hit]: ...
 
     @abstractmethod
