@@ -1,146 +1,205 @@
-"""Mem0-backed long-term user memory.
+"""Custom memory service — no mem0 extraction overhead.
 
-Mem0's `Memory` is a sync SDK; every call is wrapped in `asyncio.to_thread`
-to stay compatible with the async FastAPI app.
-
-Vector store priority: Qdrant Cloud → in-memory Qdrant (fallback if cloud is down).
-In-memory Qdrant loses data on process restart but keeps the app functional.
+Write path: our own LLM call (always short, never hits TPM limits) → Qdrant.
+Read path:  Qdrant vector search / scroll (fast, reliable).
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
+import uuid
+from datetime import datetime
 
-from mem0 import Memory
+from qdrant_client import AsyncQdrantClient, models
 
-from app.config import _csv, get_settings
+from app.config import get_settings
+from app.providers import get_embedding_router, get_llm_router
+from app.providers.base import ChatMessage
 
 logger = logging.getLogger(__name__)
 
-# Module-level singleton — initialized once, reused across requests.
-_memory_instance: Memory | None = None
+COLLECTION = "user_memories"
+
+_qdrant_client: AsyncQdrantClient | None = None
+_collection_ready = False
 
 
-def _get_memory() -> Memory:
-    global _memory_instance
-    if _memory_instance is not None:
-        return _memory_instance
+def _get_qdrant() -> AsyncQdrantClient:
+    global _qdrant_client
+    if _qdrant_client is None:
+        s = get_settings()
+        _qdrant_client = AsyncQdrantClient(
+            url=s.qdrant_url, api_key=s.qdrant_api_key or None
+        )
+    return _qdrant_client
 
+
+async def _ensure_collection() -> None:
+    global _collection_ready
+    if _collection_ready:
+        return
     s = get_settings()
-    groq_keys = _csv(s.groq_api_keys)
-    gemini_keys = _csv(s.gemini_api_keys)
+    client = _get_qdrant()
+    if not await client.collection_exists(COLLECTION):
+        await client.create_collection(
+            collection_name=COLLECTION,
+            vectors_config=models.VectorParams(
+                size=s.embedding_dim, distance=models.Distance.COSINE
+            ),
+        )
+        await client.create_payload_index(
+            collection_name=COLLECTION,
+            field_name="user_id",
+            field_schema=models.PayloadSchemaType.KEYWORD,
+        )
+        logger.info("Memory: created collection %s", COLLECTION)
+    _collection_ready = True
 
-    # Use the LAST Groq key for mem0 extraction so it has its own TPM budget
-    # separate from chat traffic (which cycles keys 0..N-1 first).
-    mem0_groq_key = groq_keys[-1] if groq_keys else ""
 
-    base = {
-        "llm": {
-            "provider": "groq",
-            "config": {
-                # llama-3.1-8b-instant: 6K TPM per key on free tier.
-                # Use dedicated last key so chat rotation doesn't starve extraction.
-                "model": "llama-3.1-8b-instant",
-                "api_key": mem0_groq_key,
-            },
-        },
-        "embedder": {
-            "provider": "gemini",
-            "config": {
-                "model": s.gemini_embed_model,
-                "embedding_dims": s.embedding_dim,
-                "api_key": gemini_keys[0] if gemini_keys else "",
-            },
-        },
-        # Only extract durable personal facts the USER stated — never assistant actions.
-        "custom_fact_extraction_prompt": (
-            "Extract ONLY durable personal facts the USER explicitly stated.\n"
-            "EXTRACT: name, age, job, employer, location, skills, hobbies, interests, "
-            "goals, family (name+relation), education, projects, opinions.\n"
-            "SKIP: assistant actions, greetings, small talk, questions the user asked, "
-            "timestamps, session metadata, anything starting with 'User was asked' or "
-            "'Assistant'.\n"
-            "No durable facts → return empty list."
-        ),
-    }
+async def warmup() -> None:
+    try:
+        await _ensure_collection()
+        logger.info("Memory: Qdrant collection ready")
+    except Exception as exc:
+        logger.warning("Memory warmup failed: %s", exc)
 
-    # Try Qdrant Cloud first; fall back to in-memory if unreachable.
-    candidates = [
-        {
-            "provider": "qdrant",
-            "config": {
-                "collection_name": s.mem0_collection,
-                "embedding_model_dims": s.embedding_dim,
-                "url": s.qdrant_url,
-                "api_key": s.qdrant_api_key or None,
-            },
-        },
-        {
-            "provider": "qdrant",
-            "config": {
-                "collection_name": s.mem0_collection,
-                "embedding_model_dims": s.embedding_dim,
-                "path": ":memory:",
-            },
-        },
+
+# ── Extraction prompt ─────────────────────────────────────────────────────────
+
+_EXTRACT_SYSTEM = (
+    "Extract ONLY personal facts the user explicitly stated about THEMSELVES.\n"
+    "INCLUDE: name, age, job title, employer, city/country, skills, hobbies, "
+    "interests, goals, family members (name + relation), education, projects, opinions.\n"
+    "EXCLUDE: questions they asked, greetings, anything about documents or AI assistants.\n"
+    "Return a JSON array of SHORT fact strings (max 15 words each).\n"
+    'No personal facts → return []. Example: ["name is Jeeva", "father is Vedachalam"]'
+)
+
+
+async def _extract_facts(text: str) -> list[str]:
+    """LLM call to pull personal facts. Input capped at 1000 chars — always tiny prompt."""
+    router = get_llm_router()
+    msgs = [
+        ChatMessage(role="system", content=_EXTRACT_SYSTEM),
+        ChatMessage(role="user", content=text[:1000]),
     ]
+    try:
+        response = await router.run(lambda p: p.complete(msgs))
+        m = re.search(r"\[.*?\]", response, re.DOTALL)
+        if m:
+            raw = json.loads(m.group())
+            return [str(f).strip() for f in raw if str(f).strip()]
+    except Exception as exc:
+        logger.warning("fact extraction LLM failed: %s", exc)
+    return []
 
-    last_exc: Exception | None = None
-    for vs in candidates:
-        try:
-            _memory_instance = Memory.from_config({**base, "vector_store": vs})
-            if vs["config"].get("path") == ":memory:":
-                logger.warning("Mem0: Qdrant Cloud unreachable — using in-memory store (data lost on restart)")
-            else:
-                logger.info("Mem0: connected to Qdrant Cloud")
-            return _memory_instance
-        except Exception as exc:
-            last_exc = exc
-            logger.warning("Mem0 vector store %s failed: %s — trying next", vs["provider"], exc)
 
-    raise RuntimeError(f"Mem0: all vector store backends failed. Last error: {last_exc}")
-
+# ── Public API ────────────────────────────────────────────────────────────────
 
 async def add_turn(user_id: str, question: str, answer: str) -> None:
-    mem = _get_memory()
-    # Only pass the user message — assistant responses contain no personal facts
-    # and cause mem0 to extract noise like "assistant greeted user".
-    messages = [{"role": "user", "content": question}]
-    await asyncio.to_thread(mem.add, messages, user_id=user_id)
+    """Extract personal facts from user's message and store in Qdrant."""
+    facts = await _extract_facts(question)
+    if not facts:
+        return
+    try:
+        emb_router = get_embedding_router()
+        embeddings = await emb_router.run(
+            lambda p: p.embed(facts, input_type="document")
+        )
+        await _ensure_collection()
+        client = _get_qdrant()
+        points = [
+            models.PointStruct(
+                id=str(uuid.uuid4()),
+                vector=vec,
+                payload={
+                    "user_id": user_id,
+                    "memory": fact,
+                    "created_at": datetime.utcnow().isoformat(),
+                },
+            )
+            for fact, vec in zip(facts, embeddings)
+        ]
+        await client.upsert(collection_name=COLLECTION, points=points)
+        logger.info("Stored %d memory fact(s) for user %.8s", len(facts), user_id)
+    except Exception as exc:
+        logger.warning("memory write failed: %s", exc)
 
 
 async def search(user_id: str, query: str, *, limit: int = 5) -> list[str]:
-    mem = _get_memory()
-    result = await asyncio.to_thread(mem.search, query, filters={"user_id": user_id}, limit=limit)
-    items = result.get("results", result) if isinstance(result, dict) else result
-    return [item["memory"] for item in items if item.get("memory")]
+    """Retrieve top-k memories semantically relevant to query."""
+    try:
+        await _ensure_collection()
+        emb_router = get_embedding_router()
+        qvec = (
+            await emb_router.run(lambda p: p.embed([query], input_type="query"))
+        )[0]
+        client = _get_qdrant()
+        result = await client.query_points(
+            collection_name=COLLECTION,
+            query=qvec,
+            query_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="user_id", match=models.MatchValue(value=user_id)
+                    )
+                ]
+            ),
+            limit=limit,
+        )
+        return [r.payload["memory"] for r in result.points if r.payload.get("memory")]
+    except Exception as exc:
+        logger.warning("memory search failed: %s", exc)
+        return []
 
 
 async def get_all(user_id: str) -> list[dict]:
-    mem = _get_memory()
+    """Fetch all stored memories for user (for the panel)."""
     try:
-        result = await asyncio.to_thread(mem.get_all, filters={"user_id": user_id})
-        items = result.get("results", result) if isinstance(result, dict) else result
-        if items:
-            return items
-    except Exception as e:
-        logger.warning("get_all() failed: %s — trying broad search fallback", e)
-    # Qdrant scroll filter sometimes returns empty even when records exist;
-    # fall back to a broad vector search which uses /points/query instead.
-    try:
-        result = await asyncio.to_thread(
-            mem.search,
-            "name age job skills hobbies interests family education projects",
-            filters={"user_id": user_id},
-            limit=50,
+        await _ensure_collection()
+        client = _get_qdrant()
+        points, _ = await client.scroll(
+            collection_name=COLLECTION,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="user_id", match=models.MatchValue(value=user_id)
+                    )
+                ]
+            ),
+            limit=200,
+            with_payload=True,
+            with_vectors=False,
         )
-        items = result.get("results", result) if isinstance(result, dict) else result
-        return [i for i in items if i.get("memory")]
-    except Exception as e2:
-        logger.warning("get_all fallback search also failed: %s", e2)
+        return [
+            {"id": str(p.id), "memory": p.payload.get("memory", "")}
+            for p in points
+            if p.payload.get("memory")
+        ]
+    except Exception as exc:
+        logger.warning("get_all failed: %s", exc)
         return []
 
 
 async def wipe(user_id: str) -> None:
-    mem = _get_memory()
-    await asyncio.to_thread(mem.delete_all, user_id=user_id)
+    """Delete all memories for user."""
+    try:
+        await _ensure_collection()
+        client = _get_qdrant()
+        await client.delete(
+            collection_name=COLLECTION,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="user_id", match=models.MatchValue(value=user_id)
+                        )
+                    ]
+                )
+            ),
+        )
+        logger.info("Wiped memories for user %.8s", user_id)
+    except Exception as exc:
+        logger.warning("memory wipe failed: %s", exc)

@@ -22,13 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 async def _warmup_memory() -> None:
-    """Initialize the mem0 singleton at startup so first user request is instant."""
+    """Ensure the memory Qdrant collection exists at startup."""
     try:
-        from app.memory.service import _get_memory
-        await asyncio.to_thread(_get_memory)
-        logger.info("Mem0 warmup complete")
+        from app.memory.service import warmup
+        await warmup()
     except Exception as exc:
-        logger.warning("Mem0 warmup failed (will retry on first request): %s", exc)
+        logger.warning("Memory warmup failed (will retry on first request): %s", exc)
 
 
 @asynccontextmanager
