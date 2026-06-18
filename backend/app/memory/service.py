@@ -98,8 +98,53 @@ async def _extract_facts(text: str) -> list[str]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+async def _dedup_and_update(
+    user_id: str,
+    client: AsyncQdrantClient,
+    fact: str,
+    vec: list[float],
+    threshold_dup: float = 0.92,
+    threshold_conflict: float = 0.75,
+) -> tuple[bool, str | None]:
+    """
+    Check new fact against existing memories.
+    Returns (should_skip, old_point_id_to_delete).
+    - score >= threshold_dup   → duplicate, skip
+    - threshold_conflict <= score < threshold_dup → likely conflict/update, delete old
+    - score < threshold_conflict → genuinely new fact
+    """
+    result = await client.query_points(
+        collection_name=COLLECTION,
+        query=vec,
+        query_filter=models.Filter(
+            must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id))]
+        ),
+        limit=1,
+        with_payload=True,
+    )
+    if not result.points:
+        return False, None
+    top = result.points[0]
+    score = top.score  # Qdrant returns cosine score directly
+    if score >= threshold_dup:
+        logger.debug("Skipping duplicate fact (score=%.3f): %s", score, fact)
+        return True, None
+    if score >= threshold_conflict:
+        logger.info("Updating conflicting fact (score=%.3f): '%s' → '%s'",
+                    score, top.payload.get("memory"), fact)
+        return False, str(top.id)
+    return False, None
+
+
 async def add_turn(user_id: str, question: str, answer: str) -> None:
-    """Extract personal facts from user's message and store in Qdrant."""
+    """Extract personal facts, dedup/update against existing, store in Qdrant."""
     facts = await _extract_facts(question)
     if not facts:
         return
@@ -110,20 +155,37 @@ async def add_turn(user_id: str, question: str, answer: str) -> None:
         )
         await _ensure_collection()
         client = _get_qdrant()
-        points = [
-            models.PointStruct(
-                id=str(uuid.uuid4()),
-                vector=vec,
-                payload={
-                    "user_id": user_id,
-                    "memory": fact,
-                    "created_at": datetime.utcnow().isoformat(),
-                },
+
+        points_to_upsert: list[models.PointStruct] = []
+        ids_to_delete: list[str] = []
+
+        for fact, vec in zip(facts, embeddings):
+            skip, old_id = await _dedup_and_update(user_id, client, fact, vec)
+            if skip:
+                continue
+            if old_id:
+                ids_to_delete.append(old_id)
+            points_to_upsert.append(
+                models.PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=vec,
+                    payload={
+                        "user_id": user_id,
+                        "memory": fact,
+                        "created_at": datetime.utcnow().isoformat(),
+                    },
+                )
             )
-            for fact, vec in zip(facts, embeddings)
-        ]
-        await client.upsert(collection_name=COLLECTION, points=points)
-        logger.info("Stored %d memory fact(s) for user %.8s", len(facts), user_id)
+
+        if ids_to_delete:
+            await client.delete(
+                collection_name=COLLECTION,
+                points_selector=models.PointIdsList(points=ids_to_delete),
+            )
+        if points_to_upsert:
+            await client.upsert(collection_name=COLLECTION, points=points_to_upsert)
+            logger.info("Stored %d fact(s), replaced %d for user %.8s",
+                        len(points_to_upsert), len(ids_to_delete), user_id)
     except Exception as exc:
         logger.warning("memory write failed: %s", exc)
 
