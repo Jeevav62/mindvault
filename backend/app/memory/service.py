@@ -34,7 +34,10 @@ def _get_memory() -> Memory:
         "llm": {
             "provider": "groq",
             "config": {
-                "model": s.groq_model,
+                # Use small fast model for mem0 extraction — separate TPM bucket from chat.
+                # llama-3.3-70b-versatile is 12K TPM; llama-3.1-8b-instant is 20K TPM.
+                # Using a different model avoids starving the chat model under load.
+                "model": "llama-3.1-8b-instant",
                 "api_key": groq_keys[0] if groq_keys else "",
             },
         },
