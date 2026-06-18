@@ -70,7 +70,8 @@ async def answer_question(
     llm_router = get_llm_router()
     text = await llm_router.run(lambda p: p.complete(messages))
 
-    asyncio.create_task(_remember(user_id, question, text))
+    if mode == "personal":
+        asyncio.create_task(_remember(user_id, question, text))
     return ChatAnswer(answer=text, citations=_hits_to_citations(used))
 
 
@@ -108,7 +109,8 @@ async def answer_question_stream(
         full_text.append(token)
         yield {"type": "token", "content": token}
 
-    asyncio.create_task(_remember(user_id, question, "".join(full_text)))
+    if mode == "personal":
+        asyncio.create_task(_remember(user_id, question, "".join(full_text)))
     yield {"type": "done"}
 
 
