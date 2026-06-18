@@ -130,11 +130,13 @@ async def answer_question_stream(
     full_text: list[str] = []
 
     if image_data:
-        # Vision models don't stream well; complete() then emit as single token
         vision = get_vision_provider()
         text = await vision.complete(messages, max_tokens=2048)
-        yield {"type": "token", "content": text}
         full_text.append(text)
+        # Fake-stream in ~8-char chunks for progressive rendering
+        for i in range(0, len(text), 8):
+            yield {"type": "token", "content": text[i:i + 8]}
+            await asyncio.sleep(0.01)
     else:
         llm_router = get_llm_router()
         async for token in llm_router.run_stream(lambda p: p.complete_stream(messages)):
