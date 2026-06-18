@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from app import memory
 from app.providers import get_embedding_router, get_llm_router
+from app.providers.base import ChatMessage
 from app.providers.factory import get_vision_provider
 from app.vectorstore import Hit, search
 
@@ -150,3 +151,26 @@ async def _remember(user_id: str, question: str, answer: str) -> None:
         await memory.add_turn(user_id, question, answer)
     except Exception:
         logger.exception("memory write failed")
+
+
+async def generate_title(question: str, answer: str) -> str:
+    """Generate a short session title from first Q+A turn."""
+    llm_router = get_llm_router()
+    msgs = [
+        ChatMessage(
+            role="system",
+            content=(
+                "Generate a concise chat title (3-5 words, no quotes, no punctuation) "
+                "that captures what this conversation is about."
+            ),
+        ),
+        ChatMessage(
+            role="user",
+            content=f"User asked: {question[:200]}\nAssistant replied: {answer[:300]}",
+        ),
+    ]
+    try:
+        title = await llm_router.run(lambda p: p.complete(msgs))
+        return title.strip().strip('"').strip("'")[:60]
+    except Exception:
+        return question[:48]

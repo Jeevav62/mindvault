@@ -240,6 +240,18 @@ export async function askStream(
   }
 }
 
+export async function generateTitle(question: string, answer: string): Promise<string> {
+  const doFetch = () =>
+    fetch(`${API}/chat/title`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ question, answer }),
+    });
+  const res = await doFetch();
+  const data = await json<{ title: string }>(res, doFetch);
+  return data.title;
+}
+
 export async function getMemories() {
   const doFetch = () =>
     fetch(`${API}/memory`, {

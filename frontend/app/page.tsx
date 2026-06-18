@@ -6,7 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   askStream, clearMemories, clearToken, deleteDoc, extractText,
-  getMemories, getToken, getUserId, login, saveToken, signup, uploadDoc,
+  generateTitle, getMemories, getToken, getUserId, login, saveToken, signup, uploadDoc,
   type ChatMode, type Citation, type HistoryMessage,
 } from "@/lib/api";
 
@@ -638,7 +638,6 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
     setAttachImage(null);
 
     const isFirst = messages.length === 0;
-    const autoTitle = isFirst ? q.slice(0, 48) + (q.length > 48 ? "…" : "") : session.title;
 
     const userLabel = pendingImage
       ? `${q} [📎 ${pendingImage.name}]`
@@ -675,13 +674,18 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
         errMsg => {
           const errMsgs = [...baseMessages, { role: "assistant" as const, text: `⚠ ${errMsg}`, mode: session.mode }];
           setMessages(errMsgs);
-          onSessionUpdate({ ...session, title: autoTitle, messages: errMsgs, updatedAt: Date.now() });
+          const t = isFirst ? q.slice(0, 48) : session.title;
+          onSessionUpdate({ ...session, title: t, messages: errMsgs, updatedAt: Date.now() });
           setBusy(false);
         },
-        () => {
+        async () => {
           const finalMsgs = [...baseMessages, { role: "assistant" as const, text: accText, citations: accCitations, mode: session.mode, streaming: false }];
           setMessages(finalMsgs);
-          onSessionUpdate({ ...session, title: autoTitle, messages: finalMsgs, updatedAt: Date.now() });
+          let title = session.title;
+          if (isFirst) {
+            try { title = await generateTitle(q, accText.slice(0, 300)); } catch { title = q.slice(0, 48); }
+          }
+          onSessionUpdate({ ...session, title, messages: finalMsgs, updatedAt: Date.now() });
           setBusy(false);
         },
         history,
@@ -693,7 +697,8 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
     } catch (err: any) {
       const errMsgs = [...baseMessages, { role: "assistant" as const, text: `⚠ ${err.message}`, mode: session.mode }];
       setMessages(errMsgs);
-      onSessionUpdate({ ...session, title: autoTitle, messages: errMsgs, updatedAt: Date.now() });
+      const t = isFirst ? q.slice(0, 48) : session.title;
+      onSessionUpdate({ ...session, title: t, messages: errMsgs, updatedAt: Date.now() });
       setBusy(false);
     }
   }
