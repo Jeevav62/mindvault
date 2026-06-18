@@ -46,6 +46,14 @@ def _get_memory() -> Memory:
                 "api_key": gemini_keys[0] if gemini_keys else "",
             },
         },
+        # Only store durable personal facts — not greetings, timestamps, or assistant actions.
+        "custom_fact_extraction_prompt": (
+            "Extract only important, durable personal facts about the user: "
+            "their name, job title, profession, technical skills, interests, hobbies, "
+            "preferences, goals, or significant personal information they have shared. "
+            "Do NOT store: greetings, pleasantries, conversation timestamps, "
+            "what the assistant said or did, or any ephemeral/one-off context."
+        ),
     }
 
     # Try Qdrant Cloud first; fall back to in-memory if unreachable.
