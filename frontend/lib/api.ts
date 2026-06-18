@@ -6,9 +6,14 @@ export type Citation = {
   chunk_index: number;
   doc_id: string;
   score: number;
+  page_number: number | null;
+  chunk_text: string;
 };
 
+export type ChatMode = "doc" | "personal";
+
 const TOKEN_KEY = "rag.access";
+const REFRESH_KEY = "rag.refresh";
 
 export function saveToken(t: string) {
   if (typeof window !== "undefined") localStorage.setItem(TOKEN_KEY, t);
@@ -17,10 +22,48 @@ export function getToken(): string | null {
   return typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
 }
 export function clearToken() {
-  if (typeof window !== "undefined") localStorage.removeItem(TOKEN_KEY);
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(REFRESH_KEY);
+  }
+}
+export function saveRefreshToken(t: string) {
+  if (typeof window !== "undefined") localStorage.setItem(REFRESH_KEY, t);
+}
+export function getRefreshToken(): string | null {
+  return typeof window !== "undefined" ? localStorage.getItem(REFRESH_KEY) : null;
 }
 
-async function json<T>(res: Response): Promise<T> {
+async function tryRefresh(): Promise<boolean> {
+  const rt = getRefreshToken();
+  if (!rt) return false;
+  try {
+    const res = await fetch(`${API}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: rt }),
+    });
+    if (!res.ok) return false;
+    const data: Tokens = await res.json();
+    saveToken(data.access_token);
+    saveRefreshToken(data.refresh_token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function json<T>(res: Response, retry?: () => Promise<Response>): Promise<T> {
+  if (res.status === 401 && retry) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      const retried = await retry();
+      if (retried.ok) return retried.json();
+    }
+    clearToken();
+    window.location.href = "/";
+    throw new Error("Session expired — please log in again");
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || `Request failed (${res.status})`);
@@ -34,7 +77,10 @@ export async function signup(email: string, password: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
-  return json<Tokens>(res);
+  const data = await json<Tokens>(res);
+  saveToken(data.access_token);
+  saveRefreshToken(data.refresh_token);
+  return data;
 }
 
 export async function login(email: string, password: string) {
@@ -43,28 +89,56 @@ export async function login(email: string, password: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
-  return json<Tokens>(res);
+  const data = await json<Tokens>(res);
+  saveToken(data.access_token);
+  saveRefreshToken(data.refresh_token);
+  return data;
 }
 
 export async function uploadDoc(file: File) {
-  const fd = new FormData();
-  fd.append("file", file);
-  const res = await fetch(`${API}/ingest`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${getToken()}` },
-    body: fd,
-  });
-  return json<{ doc_id: string; filename: string; chunk_count: number }>(res);
+  const doFetch = () => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return fetch(`${API}/ingest`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${getToken()}` },
+      body: fd,
+    });
+  };
+  const res = await doFetch();
+  return json<{ doc_id: string; filename: string; chunk_count: number }>(res, doFetch);
 }
 
-export async function ask(question: string) {
-  const res = await fetch(`${API}/chat`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${getToken()}`,
-    },
-    body: JSON.stringify({ question }),
-  });
-  return json<{ answer: string; citations: Citation[] }>(res);
+export async function ask(question: string, mode: ChatMode = "doc") {
+  const doFetch = () =>
+    fetch(`${API}/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${getToken()}`,
+      },
+      body: JSON.stringify({ question, mode }),
+    });
+  const res = await doFetch();
+  return json<{ answer: string; citations: Citation[] }>(res, doFetch);
+}
+
+export async function getMemories() {
+  const doFetch = () =>
+    fetch(`${API}/memory`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+  const res = await doFetch();
+  return json<{ items: { id: string; memory: string }[] }>(res, doFetch);
+}
+
+export async function clearMemories() {
+  const doFetch = () =>
+    fetch(`${API}/memory`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+  const res = await doFetch();
+  if (res.status === 204) return;
+  return json<void>(res, doFetch);
 }
