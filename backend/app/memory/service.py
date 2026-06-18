@@ -99,8 +99,8 @@ async def add_turn(user_id: str, question: str, answer: str) -> None:
         {"role": "user", "content": question},
         {"role": "assistant", "content": answer},
     ]
-    # mem0ai 2.x: user_id moved to filters kwarg
-    await asyncio.to_thread(mem.add, messages, filters={"user_id": user_id})
+    # mem0ai 2.x: add() still takes user_id= kwarg; only search/get_all/delete_all use filters=
+    await asyncio.to_thread(mem.add, messages, user_id=user_id)
 
 
 async def search(user_id: str, query: str, *, limit: int = 5) -> list[str]:
