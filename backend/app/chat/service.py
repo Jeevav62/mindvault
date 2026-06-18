@@ -85,7 +85,7 @@ async def answer_question(
         llm_router = get_llm_router()
         text = await llm_router.run(lambda p: p.complete(messages))
 
-    if mode == "personal":
+    if mode == "personal" and not attachment_text and not image_data:
         asyncio.create_task(_remember(user_id, question, text))
     return ChatAnswer(answer=text, citations=_hits_to_citations(used))
 
@@ -140,7 +140,7 @@ async def answer_question_stream(
             full_text.append(token)
             yield {"type": "token", "content": token}
 
-    if mode == "personal":
+    if mode == "personal" and not attachment_text and not image_data:
         asyncio.create_task(_remember(user_id, question, "".join(full_text)))
     yield {"type": "done"}
 

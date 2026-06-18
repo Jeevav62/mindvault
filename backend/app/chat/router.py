@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class HistoryMessage(BaseModel):
     role: Literal["user", "assistant"]
-    content: str = Field(max_length=8000)
+    content: str = Field(max_length=32_000)
 
 
 class ChatRequest(BaseModel):
