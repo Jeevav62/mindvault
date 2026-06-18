@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -557,7 +558,12 @@ function ChatArea({ session, onSessionUpdate, docFilter }: {
         },
         (token) => {
           accText += token;
-          setMessages((m) => { const c = [...m]; const last = c[c.length - 1]; c[c.length - 1] = { ...last, text: last.text + token }; return c; });
+          // flushSync forces React to render immediately instead of batching.
+          // React 18 batches even async state updates; without this, all tokens
+          // from one TCP chunk render at once (appears as batched response).
+          flushSync(() => {
+            setMessages((m) => { const c = [...m]; const last = c[c.length - 1]; c[c.length - 1] = { ...last, text: last.text + token }; return c; });
+          });
         },
         (errMsg) => {
           const errMsgs = [...baseMessages, { role: "assistant" as const, text: `Error: ${errMsg}`, mode: session.mode }];
