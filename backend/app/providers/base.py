@@ -49,9 +49,9 @@ Role = Literal["system", "user", "assistant"]
 @dataclass
 class ChatMessage:
     role: Role
-    content: str
+    content: "str | list[dict]"  # str for text; list for vision (OpenAI content-array format)
 
-    def as_dict(self) -> dict[str, str]:
+    def as_dict(self) -> dict:
         return {"role": self.role, "content": self.content}
 
 

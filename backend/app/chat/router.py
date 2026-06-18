@@ -29,6 +29,11 @@ class ChatRequest(BaseModel):
     mode: Literal["doc", "personal"] = "doc"
     doc_ids: list[str] | None = None
     history: list[HistoryMessage] = Field(default_factory=list, max_length=20)
+    # Inline attachment — text doc or image (base64)
+    attachment_text: str | None = Field(default=None, max_length=15_000)
+    attachment_name: str | None = Field(default=None, max_length=256)
+    image_data: str | None = None   # base64-encoded image bytes
+    image_mime: str = "image/jpeg"  # e.g. image/png, image/webp
 
 
 class CitationOut(BaseModel):
@@ -70,6 +75,8 @@ async def chat(
         result = await answer_question(
             user.id, body.question, top_k=body.top_k, mode=body.mode,
             doc_ids=body.doc_ids, history=history,
+            attachment_text=body.attachment_text, attachment_name=body.attachment_name,
+            image_data=body.image_data, image_mime=body.image_mime,
         )
     except ProviderError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"model/embedding failed: {exc}")
@@ -88,6 +95,8 @@ async def chat_stream(
             async for event in answer_question_stream(
                 user.id, body.question,
                 top_k=body.top_k, mode=body.mode, doc_ids=body.doc_ids, history=history,
+                attachment_text=body.attachment_text, attachment_name=body.attachment_name,
+                image_data=body.image_data, image_mime=body.image_mime,
             ):
                 if event["type"] == "citations":
                     top = _top_citation(event["citations"])

@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     # CSV of Groq fallback models tried in order after groq_model hits TPM.
     # Each model has its own TPM bucket, so rotation avoids rate-limit stalls.
     groq_fallback_models: str = "llama-3.1-8b-instant,gemma2-9b-it"
+    groq_vision_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
     cerebras_api_keys: str = ""
     cerebras_model: str = "llama-3.3-70b"
 

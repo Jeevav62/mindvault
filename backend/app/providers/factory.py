@@ -44,6 +44,13 @@ def _build_embedding_slots(name: str) -> list[EmbeddingProvider]:
     raise ValueError(f"unknown embedding provider: {name}")
 
 
+def get_vision_provider() -> "GroqProvider":
+    """Return a Groq vision-capable provider (not cached — stateless, cheap to create)."""
+    s = get_settings()
+    keys = _csv(s.groq_api_keys)
+    return GroqProvider(api_key=keys[0] if keys else "", model=s.groq_vision_model)
+
+
 @lru_cache
 def get_llm_router() -> FallbackRouter[LLMProvider]:
     s = get_settings()
