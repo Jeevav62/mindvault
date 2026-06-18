@@ -5,6 +5,8 @@ base class and differ only in base URL, model, and key.
 """
 from __future__ import annotations
 
+import json as _json
+
 import httpx
 
 from . import _http
@@ -55,6 +57,50 @@ class _OpenAICompatLLM(LLMProvider):
             raise ProviderBadRequest(
                 f"unexpected response shape: {data}", provider=self.name
             ) from exc
+
+
+    async def complete_stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+    ):
+        if not self.api_key:
+            from .base import ProviderUnavailable
+            raise ProviderUnavailable("no API key configured", provider=self.name)
+
+        payload = {
+            "model": self.model,
+            "messages": [m.as_dict() for m in messages],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        try:
+            async with _http.client().stream(
+                "POST", f"{self.base_url}/chat/completions",
+                json=payload, headers=headers
+            ) as resp:
+                if not resp.is_success:
+                    await resp.aread()
+                    _http.raise_for_status(resp, provider=self.name)
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    chunk = line[6:].strip()
+                    if chunk == "[DONE]":
+                        return
+                    try:
+                        data = _json.loads(chunk)
+                        delta = data["choices"][0]["delta"].get("content") or ""
+                        if delta:
+                            yield delta
+                    except (ValueError, KeyError, IndexError):
+                        continue
+        except httpx.HTTPError as exc:
+            raise _http.wrap_transport_error(exc, provider=self.name) from exc
 
 
 class GroqProvider(_OpenAICompatLLM):

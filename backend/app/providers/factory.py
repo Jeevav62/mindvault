@@ -20,7 +20,16 @@ from .router import FallbackRouter
 def _build_llm_slots(name: str) -> list[LLMProvider]:
     s = get_settings()
     if name == "groq":
-        return [GroqProvider(api_key=k, model=s.groq_model) for k in _csv(s.groq_api_keys)]
+        # Per key: primary model first, then each fallback model.
+        # Each Groq model has its own TPM bucket, so rotation avoids rate-limit stalls.
+        # Example with 1 key: Groq(70b) → Groq(8b) → Groq(gemma2) → Cerebras
+        fallback_models = _csv(s.groq_fallback_models)
+        slots: list[LLMProvider] = []
+        for k in _csv(s.groq_api_keys):
+            slots.append(GroqProvider(api_key=k, model=s.groq_model))
+            for fm in fallback_models:
+                slots.append(GroqProvider(api_key=k, model=fm))
+        return slots
     if name == "cerebras":
         return [CerebrasProvider(api_key=k, model=s.cerebras_model) for k in _csv(s.cerebras_api_keys)]
     raise ValueError(f"unknown LLM provider: {name}")
@@ -33,6 +42,13 @@ def _build_embedding_slots(name: str) -> list[EmbeddingProvider]:
     if name == "gemini":
         return [GeminiEmbeddingProvider(api_key=k, model=s.gemini_embed_model, dim=s.embedding_dim) for k in _csv(s.gemini_api_keys)]
     raise ValueError(f"unknown embedding provider: {name}")
+
+
+def get_vision_provider() -> "GroqProvider":
+    """Return a Groq vision-capable provider (not cached — stateless, cheap to create)."""
+    s = get_settings()
+    keys = _csv(s.groq_api_keys)
+    return GroqProvider(api_key=keys[0] if keys else "", model=s.groq_vision_model)
 
 
 @lru_cache

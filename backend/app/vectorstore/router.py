@@ -39,17 +39,28 @@ class VectorStoreRouter:
         raise AllStoresFailed("all vector stores failed upsert_chunks")
 
     async def search(
-        self, user_id: str, query_vector: list[float], *, top_k: int = 5
+        self, user_id: str, query_vector: list[float], *, top_k: int = 5, doc_ids: list[str] | None = None
     ) -> list[Hit]:
         for store in self._stores:
             try:
-                hits = await store.search(user_id, query_vector, top_k=top_k)
+                hits = await store.search(user_id, query_vector, top_k=top_k, doc_ids=doc_ids)
                 if store.name != self._stores[0].name:
                     logger.info("vectorstore fallback: used %s for search", store.name)
                 return hits
             except VectorStoreError as exc:
                 logger.warning("vectorstore %s search failed: %s — trying next", store.name, exc)
         raise AllStoresFailed("all vector stores failed search")
+
+    async def delete_doc(self, user_id: str, doc_id: str) -> None:
+        for store in self._stores:
+            try:
+                await store.delete_doc(user_id, doc_id)
+                if store.name != self._stores[0].name:
+                    logger.info("vectorstore fallback: used %s for delete_doc", store.name)
+                return
+            except VectorStoreError as exc:
+                logger.warning("vectorstore %s delete_doc failed: %s — trying next", store.name, exc)
+        raise AllStoresFailed("all vector stores failed delete_doc")
 
     async def aclose(self) -> None:
         for store in self._stores:

@@ -59,6 +59,7 @@ class QdrantStore(VectorStore):
                     "chunk_text": ch.text,
                     "source": ch.source,
                     "modality": ch.modality,
+                    "page_number": ch.page_number,
                 },
             )
             for ch, vec in zip(chunks, vectors)
@@ -72,21 +73,18 @@ class QdrantStore(VectorStore):
         return len(points)
 
     async def search(
-        self, user_id: str, query_vector: list[float], *, top_k: int = 5
+        self, user_id: str, query_vector: list[float], *, top_k: int = 5, doc_ids: list[str] | None = None
     ) -> list[Hit]:
         s = get_settings()
+        must = [models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id))]
+        if doc_ids:
+            must.append(models.FieldCondition(key="doc_id", match=models.MatchAny(any=doc_ids)))
         try:
             res = await self._get_client().query_points(
                 collection_name=s.qdrant_collection,
                 query=query_vector,
                 limit=top_k,
-                query_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="user_id", match=models.MatchValue(value=user_id)
-                        )
-                    ]
-                ),
+                query_filter=models.Filter(must=must),
                 with_payload=True,
             )
         except Exception as exc:
@@ -101,9 +99,27 @@ class QdrantStore(VectorStore):
                     doc_id=payload.get("doc_id", ""),
                     chunk_index=payload.get("chunk_index", 0),
                     score=p.score,
+                    page_number=payload.get("page_number"),
                 )
             )
         return hits
+
+    async def delete_doc(self, user_id: str, doc_id: str) -> None:
+        s = get_settings()
+        try:
+            await self._get_client().delete(
+                collection_name=s.qdrant_collection,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+                            models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id)),
+                        ]
+                    )
+                ),
+            )
+        except Exception as exc:
+            raise VectorStoreError(str(exc), store=self.name) from exc
 
     async def aclose(self) -> None:
         if self._client is not None:

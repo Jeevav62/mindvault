@@ -49,9 +49,9 @@ Role = Literal["system", "user", "assistant"]
 @dataclass
 class ChatMessage:
     role: Role
-    content: str
+    content: "str | list[dict]"  # str for text; list for vision (OpenAI content-array format)
 
-    def as_dict(self) -> dict[str, str]:
+    def as_dict(self) -> dict:
         return {"role": self.role, "content": self.content}
 
 
@@ -71,6 +71,17 @@ class LLMProvider(abc.ABC):
         max_tokens: int = 1024,
     ) -> str:
         """Return the assistant's text reply, or raise a ProviderError."""
+
+    async def complete_stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+    ):
+        """Yield text tokens. Default: calls complete() and yields full response at once."""
+        text = await self.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        yield text
 
 
 class EmbeddingProvider(abc.ABC):

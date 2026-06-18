@@ -85,15 +85,18 @@ class PineconeStore(VectorStore):
         return len(records)
 
     async def search(
-        self, user_id: str, query_vector: list[float], *, top_k: int = 5
+        self, user_id: str, query_vector: list[float], *, top_k: int = 5, doc_ids: list[str] | None = None
     ) -> list[Hit]:
+        filter_dict: dict = {"user_id": {"$eq": user_id}}
+        if doc_ids:
+            filter_dict["doc_id"] = {"$in": doc_ids}
         try:
             index = self._get_index()
             res = await asyncio.to_thread(
                 index.query,
                 vector=query_vector,
                 top_k=top_k,
-                filter={"user_id": {"$eq": user_id}},
+                filter=filter_dict,
                 include_metadata=True,
             )
         except VectorStoreError:
@@ -114,6 +117,18 @@ class PineconeStore(VectorStore):
                 )
             )
         return hits
+
+    async def delete_doc(self, user_id: str, doc_id: str) -> None:
+        try:
+            index = self._get_index()
+            await asyncio.to_thread(
+                index.delete,
+                filter={"user_id": {"$eq": user_id}, "doc_id": {"$eq": doc_id}},
+            )
+        except VectorStoreError:
+            raise
+        except Exception as exc:
+            raise VectorStoreError(str(exc), store=self.name) from exc
 
     async def aclose(self) -> None:
         self._index = None

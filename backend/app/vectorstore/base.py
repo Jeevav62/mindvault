@@ -12,6 +12,7 @@ class Chunk:
     chunk_index: int
     source: str
     modality: str = "text"
+    page_number: int | None = None
 
 
 @dataclass
@@ -21,6 +22,7 @@ class Hit:
     doc_id: str
     chunk_index: int
     score: float
+    page_number: int | None = None
 
 
 class VectorStoreError(Exception):
@@ -44,8 +46,11 @@ class VectorStore(ABC):
 
     @abstractmethod
     async def search(
-        self, user_id: str, query_vector: list[float], *, top_k: int = 5
+        self, user_id: str, query_vector: list[float], *, top_k: int = 5, doc_ids: list[str] | None = None
     ) -> list[Hit]: ...
+
+    @abstractmethod
+    async def delete_doc(self, user_id: str, doc_id: str) -> None: ...
 
     @abstractmethod
     async def aclose(self) -> None: ...
