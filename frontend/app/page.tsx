@@ -303,6 +303,9 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   }
 
   const docFilter = selectedDocIds.size > 0 ? [...selectedDocIds] : null;
+  const filteredDocNames = selectedDocIds.size > 0
+    ? docs.filter(d => selectedDocIds.has(d.doc_id)).map(d => d.filename)
+    : null;
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: "var(--bg-solid)" }}>
@@ -435,6 +438,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
       {activeSession && (
         <ChatArea key={activeSession.id} session={activeSession}
           onSessionUpdate={handleSessionUpdate} docFilter={docFilter}
+          filteredDocNames={filteredDocNames}
           onNewSession={createNewSession} />
       )}
 
@@ -563,9 +567,10 @@ function DocItem({ doc, selected, onRemove, onToggle }: {
 
 // ─── Chat Area ────────────────────────────────────────────────────────────────
 
-function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
+function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNewSession }: {
   session: Session; onSessionUpdate: (s: Session) => void;
-  docFilter: string[] | null; onNewSession: (mode: ChatMode) => void;
+  docFilter: string[] | null; filteredDocNames: string[] | null;
+  onNewSession: (mode: ChatMode) => void;
 }) {
   const [messages, setMessages] = useState<Msg[]>(session.messages);
   const [input, setInput] = useState("");
@@ -725,8 +730,10 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
 
   const subtitle = session.mode === "personal"
     ? "Personal mode · memory enabled"
-    : docFilter
-      ? `Filtered to ${docFilter.length} doc${docFilter.length > 1 ? "s" : ""}`
+    : filteredDocNames && filteredDocNames.length > 0
+      ? filteredDocNames.length === 1
+        ? `Filtered: ${filteredDocNames[0].slice(0, 40)}`
+        : `Filtered: ${filteredDocNames.slice(0, 2).map(n => n.split(".")[0]).join(", ")}${filteredDocNames.length > 2 ? ` +${filteredDocNames.length - 2}` : ""}`
       : "Doc mode · grounded answers";
 
   return (
