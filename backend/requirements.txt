@@ -33,6 +33,7 @@ tiktoken>=0.8
 # Memory (Phase 2)
 mem0ai>=0.1
 google-genai>=1.0
+groq>=0.9
 
 # ── Tests (dev) ──
 pytest>=8.3
