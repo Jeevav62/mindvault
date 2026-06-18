@@ -650,7 +650,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, onNewSession }: {
 
     setMessages(m => [...m, userMsg, { role: "assistant", text: "", citations: [], mode: session.mode, streaming: true }]);
 
-    const history: HistoryMessage[] = messages.map(m => ({ role: m.role, content: m.text }));
+    const history: HistoryMessage[] = messages.slice(-20).map(m => ({ role: m.role, content: m.text }));
     let accText = "";
     let accCitations: Citation[] = [];
 
