@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from app.config import get_settings
+from app.limiter import limiter
 
 from .dependencies import get_current_user
 from .repository import UserExists, UserRecord, get_user_repository
@@ -30,28 +33,55 @@ def _tokens(user_id: str) -> TokenResponse:
     )
 
 
+def _is_admin(email: str) -> bool:
+    s = get_settings()
+    return bool(s.admin_email) and email.lower() == s.admin_email.lower()
+
+
 @router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def signup(body: SignupRequest) -> TokenResponse:
+@limiter.limit("5/minute")
+async def signup(request: Request, body: SignupRequest) -> TokenResponse:
     repo = get_user_repository()
+    # Admin email auto-approved; everyone else starts pending
+    initial_status = "approved" if _is_admin(str(body.email)) else "pending"
     try:
-        user = await repo.create(str(body.email), hash_password(body.password))
+        user = await repo.create(str(body.email), hash_password(body.password), status=initial_status)
     except UserExists:
         raise HTTPException(status.HTTP_409_CONFLICT, "email already registered")
+    if user.status == "pending":
+        # Return tokens but frontend must detect pending status
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "pending_approval",
+        )
     return _tokens(user.id)
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest) -> TokenResponse:
+@limiter.limit("10/minute")
+async def login(request: Request, body: LoginRequest) -> TokenResponse:
     repo = get_user_repository()
     user = await repo.get_by_email(str(body.email))
-    # Verify even on missing user to avoid leaking which emails exist (timing).
+    # Always verify to avoid timing-based email enumeration
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
+
+    # Admin email: auto-approve if somehow still pending (e.g. after DB migration)
+    if user.status == "pending" and _is_admin(user.email):
+        await repo.set_status(user.id, "approved")
+        user.status = "approved"
+
+    if user.status == "pending":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "pending_approval")
+    if user.status == "rejected":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "access_denied")
+
     return _tokens(user.id)
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh(body: RefreshRequest) -> TokenResponse:
+@limiter.limit("30/minute")
+async def refresh(request: Request, body: RefreshRequest) -> TokenResponse:
     try:
         payload = decode_token(body.refresh_token, expected_type="refresh")
     except TokenError as exc:

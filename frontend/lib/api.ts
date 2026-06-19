@@ -363,6 +363,37 @@ export async function deleteMemory(id: string) {
   return json<void>(res, doFetch);
 }
 
+export type PendingUser = { id: string; email: string };
+
+export async function getPendingUsers(): Promise<PendingUser[]> {
+  const doFetch = () =>
+    fetch(`${API}/admin/users/pending`, { headers: { Authorization: `Bearer ${getToken()}` } });
+  const res = await doFetch();
+  return json<PendingUser[]>(res, doFetch);
+}
+
+export async function approveUser(id: string): Promise<void> {
+  const doFetch = () =>
+    fetch(`${API}/admin/users/${encodeURIComponent(id)}/approve`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+  const res = await doFetch();
+  if (res.status === 204) return;
+  return json<void>(res, doFetch);
+}
+
+export async function rejectUser(id: string): Promise<void> {
+  const doFetch = () =>
+    fetch(`${API}/admin/users/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+  const res = await doFetch();
+  if (res.status === 204) return;
+  return json<void>(res, doFetch);
+}
+
 export type ProviderStat = { ok: number; fallback: number; error: number };
 export type UsageData = Record<string, Record<string, ProviderStat>>;
 

@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     # Apify (URL crawling)
     apify_api_key: str = ""
 
+    # Admin — only this email is auto-approved; everyone else needs manual approval
+    admin_email: str = ""
+
     @field_validator(
         "cors_origins",
         "vector_store_order",
