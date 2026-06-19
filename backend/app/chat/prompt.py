@@ -51,8 +51,8 @@ def build_web_messages(
     ambient_context: str | None = None,
 ) -> list[ChatMessage]:
     context_parts = [
-        f"[{i+1}] {r.title}\nURL: {r.url}\n{r.content}"
-        for i, r in enumerate(results)
+        f"[{i+1}] {r.title}\nURL: {r.url}\n{r.content[:600]}"
+        for i, r in enumerate(results[:4])
     ]
     context = "\n\n".join(context_parts) if context_parts else "(no results found)"
     ambient_block = f"\n\nAmbient context: {ambient_context}" if ambient_context else ""
