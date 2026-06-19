@@ -245,6 +245,27 @@ async def get_all(user_id: str) -> list[dict]:
         return []
 
 
+async def delete_one(user_id: str, memory_id: str) -> bool:
+    """Delete a single memory by id. Returns True if deleted."""
+    try:
+        await _ensure_collection()
+        client = _get_qdrant()
+        # Verify ownership before deleting
+        results = await client.retrieve(
+            collection_name=COLLECTION, ids=[memory_id], with_payload=True
+        )
+        if not results or results[0].payload.get("user_id") != user_id:
+            return False
+        await client.delete(
+            collection_name=COLLECTION,
+            points_selector=models.PointIdsList(points=[memory_id]),
+        )
+        return True
+    except Exception as exc:
+        logger.warning("delete_one failed: %s", exc)
+        return False
+
+
 async def wipe(user_id: str) -> None:
     """Delete all memories for user."""
     try:

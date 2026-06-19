@@ -61,3 +61,29 @@ async def ingest_document(user_id: str, filename: str, data: bytes) -> IngestRes
     return IngestResult(
         doc_id=doc_id, filename=filename, blob_path=blob_path, chunk_count=count
     )
+
+
+async def ingest_text(user_id: str, source_name: str, text: str) -> IngestResult:
+    """Ingest pre-extracted text (e.g. from a URL) — skips blob storage."""
+    doc_id = str(uuid.uuid4())
+    chunks: list[Chunk] = []
+    for piece in chunk_text(text):
+        chunks.append(Chunk(
+            text=piece,
+            doc_id=doc_id,
+            chunk_index=len(chunks),
+            source=source_name,
+            page_number=None,
+        ))
+    if not chunks:
+        raise EmptyDocument(source_name)
+
+    router = get_embedding_router()
+    vectors = await router.run(
+        lambda p: p.embed([c.text for c in chunks], input_type="document")
+    )
+
+    await ensure_collection()
+    count = await upsert_chunks(user_id, chunks, vectors)
+
+    return IngestResult(doc_id=doc_id, filename=source_name, blob_path="", chunk_count=count)

@@ -5,13 +5,14 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from app import memory
+from app import graph, memory
 from app.providers import get_embedding_router, get_llm_router
 from app.providers.base import ChatMessage
 from app.providers.factory import get_vision_provider
+from app.providers.search import get_search_provider
 from app.vectorstore import Hit, search
 
-from .prompt import build_messages
+from .prompt import build_messages, build_web_messages
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ class Citation:
     score: float
     page_number: int | None = None
     chunk_text: str = ""
+    url: str | None = None  # set for web search citations
 
 
 @dataclass
@@ -103,8 +105,34 @@ async def answer_question_stream(
     attachment_name: str | None = None,
     image_data: str | None = None,
     image_mime: str = "image/jpeg",
+    ambient_context: str | None = None,
 ):
     """Async generator yielding SSE event dicts: citations → tokens → done."""
+
+    # ── Web search mode ────────────────────────────────────────────────────
+    if mode == "web":
+        searcher = get_search_provider()
+        results = await searcher.search(question)
+        web_citations = [
+            Citation(
+                source=r.title or r.url,
+                chunk_index=i,
+                doc_id="",
+                score=r.score,
+                url=r.url,
+                chunk_text=r.content,
+            )
+            for i, r in enumerate(results)
+        ]
+        yield {"type": "citations", "citations": web_citations}
+        msgs = build_web_messages(question, results, ambient_context=ambient_context)
+        llm_router = get_llm_router()
+        async for token in llm_router.run_stream(lambda p: p.complete_stream(msgs)):
+            yield {"type": "token", "content": token}
+        yield {"type": "done"}
+        return
+
+    # ── Standard RAG / personal ────────────────────────────────────────────
     emb_router = get_embedding_router()
     qvec = (await emb_router.run(lambda p: p.embed([question], input_type="query")))[0]
 
@@ -119,8 +147,16 @@ async def answer_question_stream(
         logger.exception("memory search failed; continuing without it")
         memories = []
 
+    graph_ctx = ""
+    if mode == "personal":
+        try:
+            graph_ctx = await graph.query_context(user_id, question)
+        except Exception:
+            logger.warning("graph context failed; continuing without it")
+
     messages, used = build_messages(
-        question, hits, memories=memories, mode=mode, history=history or [],
+        question, hits, memories=memories, graph_context=graph_ctx,
+        ambient_context=ambient_context, mode=mode, history=history or [],
         attachment_text=attachment_text, attachment_name=attachment_name,
         image_data=image_data, image_mime=image_mime,
     )
@@ -133,7 +169,6 @@ async def answer_question_stream(
         vision = get_vision_provider()
         text = await vision.complete(messages, max_tokens=2048)
         full_text.append(text)
-        # Fake-stream in ~8-char chunks for progressive rendering
         for i in range(0, len(text), 8):
             yield {"type": "token", "content": text[i:i + 8]}
             await asyncio.sleep(0.01)
@@ -144,7 +179,9 @@ async def answer_question_stream(
             yield {"type": "token", "content": token}
 
     if mode == "personal" and not attachment_text and not image_data:
-        asyncio.create_task(_remember(user_id, question, "".join(full_text)))
+        answer_text = "".join(full_text)
+        asyncio.create_task(_remember(user_id, question, answer_text))
+        asyncio.create_task(_graph_remember(user_id, question))
     yield {"type": "done"}
 
 
@@ -153,6 +190,13 @@ async def _remember(user_id: str, question: str, answer: str) -> None:
         await memory.add_turn(user_id, question, answer)
     except Exception:
         logger.exception("memory write failed")
+
+
+async def _graph_remember(user_id: str, question: str) -> None:
+    try:
+        await graph.add_turn(user_id, question)
+    except Exception:
+        logger.exception("graph write failed")
 
 
 async def generate_title(question: str, answer: str) -> str:

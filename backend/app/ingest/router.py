@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.auth.dependencies import get_current_user
 from app.auth.repository import UserRecord
@@ -10,7 +10,8 @@ from app.providers.base import ProviderError
 from app.vectorstore import delete_doc
 
 from .extract import UnsupportedFileType
-from .service import EmptyDocument, ingest_document
+from .service import EmptyDocument, ingest_document, ingest_text
+from .url_fetcher import fetch_url_text
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
@@ -70,6 +71,45 @@ async def extract_text_only(
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "unsupported file type")
     # Cap at 12 000 chars to stay within context window budgets
     return {"text": text[:12_000], "filename": file.filename or "file", "truncated": len(text) > 12_000}
+
+
+class IngestUrlRequest(BaseModel):
+    url: str = Field(max_length=2000)
+
+    @field_validator("url")
+    @classmethod
+    def must_be_http(cls, v: str) -> str:
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+        return v
+
+
+@router.post("/url", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
+async def ingest_url(
+    body: IngestUrlRequest,
+    user: UserRecord = Depends(get_current_user),
+) -> IngestResponse:
+    try:
+        source_name, text = await fetch_url_text(body.url)
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc))
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+    except Exception as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"URL fetch failed: {exc}")
+
+    try:
+        result = await ingest_text(user.id, source_name, text)
+    except EmptyDocument:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "no extractable text in page")
+    except ProviderError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"embedding failed: {exc}")
+
+    return IngestResponse(
+        doc_id=result.doc_id,
+        filename=result.filename,
+        chunk_count=result.chunk_count,
+    )
 
 
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)

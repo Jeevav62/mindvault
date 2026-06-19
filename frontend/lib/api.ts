@@ -8,9 +8,18 @@ export type Citation = {
   score: number;
   page_number: number | null;
   chunk_text: string;
+  url?: string | null;
 };
 
-export type ChatMode = "doc" | "personal";
+export type AmbientPayload = {
+  lat?: number;
+  lon?: number;
+  city?: string;
+  country?: string;
+  timestamp?: string;
+};
+
+export type ChatMode = "doc" | "personal" | "web";
 
 const TOKEN_KEY = "rag.access";
 const REFRESH_KEY = "rag.refresh";
@@ -123,6 +132,17 @@ export async function uploadDoc(file: File) {
   return json<{ doc_id: string; filename: string; chunk_count: number }>(res, doFetch);
 }
 
+export async function ingestUrl(url: string) {
+  const doFetch = () =>
+    fetch(`${API}/ingest/url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ url }),
+    });
+  const res = await doFetch();
+  return json<{ doc_id: string; filename: string; chunk_count: number }>(res, doFetch);
+}
+
 export async function deleteDoc(docId: string) {
   const doFetch = () =>
     fetch(`${API}/ingest/${encodeURIComponent(docId)}`, {
@@ -177,6 +197,7 @@ export async function askStream(
   attachmentName?: string | null,
   imageData?: string | null,
   imageMime?: string,
+  ambientPayload?: AmbientPayload | null,
 ): Promise<void> {
   const makeReq = () =>
     fetch(`${API}/chat/stream`, {
@@ -191,6 +212,7 @@ export async function askStream(
         attachment_name: attachmentName ?? null,
         image_data: imageData ?? null,
         image_mime: imageMime ?? "image/jpeg",
+        ambient_payload: ambientPayload ?? null,
       }),
     });
 
@@ -240,6 +262,75 @@ export async function askStream(
   }
 }
 
+export async function transcribeAudio(blob: Blob): Promise<{ text: string }> {
+  const doFetch = () =>
+    fetch(`${API}/stt`, {
+      method: "POST",
+      headers: {
+        "Content-Type": blob.type || "audio/webm",
+        Authorization: `Bearer ${getToken()}`,
+      },
+      body: blob,
+    });
+  const res = await doFetch();
+  return json<{ text: string }>(res, doFetch);
+}
+
+export async function synthesizeSpeech(text: string): Promise<{ buffer: ArrayBuffer; contentType: string }> {
+  const doFetch = () =>
+    fetch(`${API}/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ text }),
+    });
+  const res = await doFetch();
+  if (res.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      const retried = await doFetch();
+      if (retried.ok) return { buffer: await retried.arrayBuffer(), contentType: retried.headers.get("content-type") || "audio/mpeg" };
+    }
+    clearToken(); window.location.href = "/"; throw new Error("Session expired");
+  }
+  if (!res.ok) throw new Error(`TTS failed (${res.status})`);
+  return { buffer: await res.arrayBuffer(), contentType: res.headers.get("content-type") || "audio/mpeg" };
+}
+
+export async function streamSpeech(
+  text: string,
+  onChunk: (pcmF32le: Float32Array, sampleRate: number) => void,
+): Promise<void> {
+  const res = await fetch(`${API}/tts/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok || !res.body) throw new Error(`TTS stream failed (${res.status})`);
+  const sampleRate = parseInt(res.headers.get("x-tts-sample-rate") || "22050", 10);
+  const reader = res.body.getReader();
+  let remainder = new Uint8Array(0);
+  const BYTES_PER_SAMPLE = 4; // f32le
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value?.length) continue;
+    const combined = new Uint8Array(remainder.length + value.length);
+    combined.set(remainder);
+    combined.set(value, remainder.length);
+    const completeSamples = Math.floor(combined.length / BYTES_PER_SAMPLE);
+    const usableBytes = completeSamples * BYTES_PER_SAMPLE;
+    remainder = combined.slice(usableBytes);
+    if (completeSamples > 0) {
+      onChunk(new Float32Array(combined.buffer, 0, completeSamples), sampleRate);
+    }
+  }
+}
+
+export function getSttWsUrl(): string {
+  const wsBase = API.replace(/^http/, "ws");
+  return `${wsBase}/stt/ws?token=${encodeURIComponent(getToken() ?? "")}`;
+}
+
 export async function generateTitle(question: string, answer: string): Promise<string> {
   const doFetch = () =>
     fetch(`${API}/chat/title`, {
@@ -259,6 +350,17 @@ export async function getMemories() {
     });
   const res = await doFetch();
   return json<{ items: { id: string; memory: string }[] }>(res, doFetch);
+}
+
+export async function deleteMemory(id: string) {
+  const doFetch = () =>
+    fetch(`${API}/memory/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+  const res = await doFetch();
+  if (res.status === 204) return;
+  return json<void>(res, doFetch);
 }
 
 export async function clearMemories() {

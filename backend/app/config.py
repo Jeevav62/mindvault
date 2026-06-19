@@ -75,17 +75,33 @@ class Settings(BaseSettings):
     gemini_api_keys: str = ""
     gemini_embed_model: str = "gemini-embedding-001"
 
-    # STT / TTS (used in later phases)
+    # STT / TTS
     stt_provider_order: list[str] = Field(
-        default_factory=lambda: ["deepgram", "cartesia"]
+        default_factory=lambda: ["deepgram", "groq"]
     )
     deepgram_api_key: str = ""
     cartesia_api_keys: str = ""
+    cartesia_voice_id: str = "a0e99841-438c-4a64-b679-ae501e7d6091"
     tts_provider_order: list[str] = Field(
         default_factory=lambda: ["cartesia", "sarvam", "murf"]
     )
     sarvam_api_keys: str = ""
     murf_api_key: str = ""
+
+    # Neo4j Knowledge Graph
+    neo4j_uri: str = ""
+    neo4j_username: str = "neo4j"
+    neo4j_password: str = ""
+    neo4j_database: str = "neo4j"
+
+    # Web search
+    tavily_api_key: str = ""
+
+    # Ambient context
+    openweathermap_api_key: str = ""
+
+    # Apify (URL crawling)
+    apify_api_key: str = ""
 
     @field_validator(
         "cors_origins",

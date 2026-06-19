@@ -12,6 +12,8 @@ from app.auth.dependencies import get_current_user
 from app.auth.repository import UserRecord
 from app.providers.base import ProviderError
 
+from app.context import build_ambient_context
+
 from .service import answer_question, answer_question_stream, generate_title
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -23,17 +25,25 @@ class HistoryMessage(BaseModel):
     content: str = Field(max_length=32_000)
 
 
+class AmbientPayload(BaseModel):
+    lat: float | None = None
+    lon: float | None = None
+    city: str | None = Field(default=None, max_length=120)
+    country: str | None = Field(default=None, max_length=120)
+    timestamp: str | None = Field(default=None, max_length=80)
+
+
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=5, ge=1, le=20)
-    mode: Literal["doc", "personal"] = "doc"
+    mode: Literal["doc", "personal", "web"] = "doc"
     doc_ids: list[str] | None = None
     history: list[HistoryMessage] = Field(default_factory=list, max_length=20)
-    # Inline attachment — text doc or image (base64)
     attachment_text: str | None = Field(default=None, max_length=15_000)
     attachment_name: str | None = Field(default=None, max_length=256)
-    image_data: str | None = None   # base64-encoded image bytes
-    image_mime: str = "image/jpeg"  # e.g. image/png, image/webp
+    image_data: str | None = None
+    image_mime: str = "image/jpeg"
+    ambient_payload: AmbientPayload | None = None
 
 
 class CitationOut(BaseModel):
@@ -43,6 +53,7 @@ class CitationOut(BaseModel):
     score: float
     page_number: int | None = None
     chunk_text: str = ""
+    url: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -51,15 +62,23 @@ class ChatResponse(BaseModel):
 
 
 def _top_citation(citations) -> list[CitationOut]:
+    # Web citations: return all (already ranked by Tavily score)
+    # Doc citations: return top-1 by score
+    if citations and getattr(citations[0], "url", None):
+        return [
+            CitationOut(
+                source=c.source, chunk_index=c.chunk_index, doc_id=c.doc_id,
+                score=c.score, page_number=c.page_number, chunk_text=c.chunk_text,
+                url=c.url,
+            )
+            for c in citations
+        ]
     top = sorted(citations, key=lambda c: c.score, reverse=True)[:1]
     return [
         CitationOut(
-            source=c.source,
-            chunk_index=c.chunk_index,
-            doc_id=c.doc_id,
-            score=c.score,
-            page_number=c.page_number,
-            chunk_text=c.chunk_text,
+            source=c.source, chunk_index=c.chunk_index, doc_id=c.doc_id,
+            score=c.score, page_number=c.page_number, chunk_text=c.chunk_text,
+            url=None,
         )
         for c in top
     ]
@@ -92,11 +111,19 @@ async def chat_stream(
     async def event_gen():
         try:
             history = [(m.role, m.content) for m in body.history]
+            ambient_context: str | None = None
+            if body.ambient_payload:
+                p = body.ambient_payload
+                ambient_context = await build_ambient_context(
+                    lat=p.lat, lon=p.lon, city=p.city,
+                    country=p.country, timestamp=p.timestamp,
+                )
             async for event in answer_question_stream(
                 user.id, body.question,
                 top_k=body.top_k, mode=body.mode, doc_ids=body.doc_ids, history=history,
                 attachment_text=body.attachment_text, attachment_name=body.attachment_name,
                 image_data=body.image_data, image_mime=body.image_mime,
+                ambient_context=ambient_context,
             ):
                 if event["type"] == "citations":
                     top = _top_citation(event["citations"])

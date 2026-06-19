@@ -5,9 +5,10 @@ import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  askStream, clearMemories, clearToken, deleteDoc, extractText,
-  generateTitle, getMemories, getToken, getUserId, login, saveToken, signup, uploadDoc,
-  type ChatMode, type Citation, type HistoryMessage,
+  askStream, clearMemories, clearToken, deleteDoc, deleteMemory, extractText,
+  generateTitle, getMemories, getToken, getUserId, getSttWsUrl, ingestUrl, login,
+  saveToken, signup, streamSpeech, transcribeAudio, uploadDoc,
+  type AmbientPayload, type ChatMode, type Citation, type HistoryMessage,
 } from "@/lib/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -19,7 +20,7 @@ type Msg = {
   mode?: ChatMode;
   streaming?: boolean;
   isError?: boolean;
-  retryPayload?: { question: string; attachText?: string | null; attachName?: string | null; imageData?: string | null; imageMime?: string };
+  retryPayload?: { question: string; attachText?: string | null; attachName?: string | null; imageData?: string | null; imageMime?: string; mode?: ChatMode };
 };
 
 type Session = {
@@ -27,6 +28,7 @@ type Session = {
   title: string;
   mode: ChatMode;
   messages: Msg[];
+  docs: DocFile[];
   createdAt: number;
   updatedAt: number;
 };
@@ -34,11 +36,15 @@ type Session = {
 type DocFile = { filename: string; chunk_count: number; doc_id: string };
 
 function newSession(mode: ChatMode = "doc"): Session {
-  return { id: crypto.randomUUID(), title: "New Chat", mode, messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+  return { id: crypto.randomUUID(), title: "New Chat", mode, messages: [], docs: [], createdAt: Date.now(), updatedAt: Date.now() };
 }
 
 function loadSessions(uid: string): Session[] {
-  try { const r = localStorage.getItem(`rag.sessions.${uid}`); return r ? JSON.parse(r) : []; } catch { return []; }
+  try {
+    const r = localStorage.getItem(`rag.sessions.${uid}`);
+    const sessions = r ? JSON.parse(r) : [];
+    return sessions.map((s: Session) => ({ docs: [], ...s }));
+  } catch { return []; }
 }
 function saveSessions(uid: string, s: Session[]) { localStorage.setItem(`rag.sessions.${uid}`, JSON.stringify(s)); }
 
@@ -229,21 +235,53 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     const s = loadSessions(uid);
     return s.length > 0 ? s.sort((a, b) => b.updatedAt - a.updatedAt)[0].id : "";
   });
-  const [docs, setDocs] = useState<DocFile[]>(() => {
-    if (typeof window === "undefined") return [];
-    try { return JSON.parse(localStorage.getItem(`rag.docs.${uid}`) || "[]"); } catch { return []; }
-  });
   const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [urlInput, setUrlInput] = useState("");
+  const [urlBusy, setUrlBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [docsExpanded, setDocsExpanded] = useState(true);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [memories, setMemories] = useState<{ id: string; memory: string }[]>([]);
   const [memBusy, setMemBusy] = useState(false);
   const [memRefreshing, setMemRefreshing] = useState(false);
+  const [ambientGeo, setAmbientGeo] = useState<{ lat?: number; lon?: number; city?: string; country?: string } | null>(null);
+  const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    const v = localStorage.getItem("rag.tts");
+    return v === null ? true : v === "1";
+  });
+
+  useEffect(() => { localStorage.setItem("rag.tts", ttsEnabled ? "1" : "0"); }, [ttsEnabled]);
+
+  useEffect(() => {
+    if (!navigator.geolocation) { setAmbientGeo({}); return; }
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        try {
+          const r = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
+            { headers: { "User-Agent": "rag-chat-personal/1.0" } }
+          );
+          const data = await r.json();
+          setAmbientGeo({
+            lat, lon,
+            city: data.address?.city || data.address?.town || data.address?.village || undefined,
+            country: data.address?.country || undefined,
+          });
+        } catch {
+          setAmbientGeo({ lat, lon });
+        }
+      },
+      () => setAmbientGeo({}),
+      { timeout: 5000 },
+    );
+  }, []);
 
   useEffect(() => { saveSessions(uid, sessions); }, [sessions]);
-  useEffect(() => { localStorage.setItem(`rag.docs.${uid}`, JSON.stringify(docs)); }, [docs]);
+  useEffect(() => { setSelectedDocIds(new Set()); }, [activeId]);
 
   const activeSession = sessions.find(s => s.id === activeId) ?? sessions[0];
 
@@ -258,6 +296,8 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   }
 
   function deleteSession(id: string) {
+    const toDelete = sessions.find(s => s.id === id);
+    toDelete?.docs.forEach(d => deleteDoc(d.doc_id).catch(() => {}));
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id);
       if (next.length === 0) { const s = newSession(); setActiveId(s.id); return [s]; }
@@ -277,18 +317,44 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     return () => document.removeEventListener("keydown", handler);
   }, [activeSession?.mode]);
 
+  function addDocToSession(doc: DocFile) {
+    setSessions(prev => prev.map(s =>
+      s.id === activeId ? { ...s, docs: [...s.docs, doc] } : s
+    ));
+  }
+
+  async function handleIngestUrl() {
+    const url = urlInput.trim();
+    if (!url || urlBusy) return;
+    setUrlInput("");
+    setUrlBusy(true);
+    setUploadStatus("Fetching page via Apify…");
+    try {
+      const r = await ingestUrl(url);
+      addDocToSession({ filename: r.filename, chunk_count: r.chunk_count, doc_id: r.doc_id });
+      setUploadStatus(`✓ ${r.filename} — ${r.chunk_count} chunks`);
+      setTimeout(() => setUploadStatus(null), 4000);
+    } catch (err: any) {
+      setUploadStatus(`URL failed: ${err.message}`);
+    } finally {
+      setUrlBusy(false);
+    }
+  }
+
   async function handleFile(file: File) {
     setUploadStatus(`Uploading ${file.name}…`);
     try {
       const r = await uploadDoc(file);
-      setDocs(d => [...d, { filename: r.filename, chunk_count: r.chunk_count, doc_id: r.doc_id }]);
+      addDocToSession({ filename: r.filename, chunk_count: r.chunk_count, doc_id: r.doc_id });
       setUploadStatus(`✓ ${r.filename} — ${r.chunk_count} chunks`);
       setTimeout(() => setUploadStatus(null), 3500);
     } catch (err: any) { setUploadStatus(`Upload failed: ${err.message}`); }
   }
 
   async function handleRemoveDoc(docId: string) {
-    setDocs(d => d.filter(x => x.doc_id !== docId));
+    setSessions(prev => prev.map(s =>
+      s.id === activeId ? { ...s, docs: s.docs.filter(d => d.doc_id !== docId) } : s
+    ));
     setSelectedDocIds(s => { const n = new Set(s); n.delete(docId); return n; });
     try { await deleteDoc(docId); } catch {}
   }
@@ -302,10 +368,13 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     finally { setMemBusy(false); setMemRefreshing(false); }
   }
 
-  const docFilter = selectedDocIds.size > 0 ? [...selectedDocIds] : null;
-  const filteredDocNames = selectedDocIds.size > 0
-    ? docs.filter(d => selectedDocIds.has(d.doc_id)).map(d => d.filename)
+  const sessionDocs = activeSession?.docs ?? [];
+  const docFilter = sessionDocs.length > 0
+    ? (selectedDocIds.size > 0 ? [...selectedDocIds] : sessionDocs.map(d => d.doc_id))
     : null;
+  const filteredDocNames = selectedDocIds.size > 0
+    ? sessionDocs.filter(d => selectedDocIds.has(d.doc_id)).map(d => d.filename)
+    : sessionDocs.length > 0 ? sessionDocs.map(d => d.filename) : null;
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: "var(--bg-solid)" }}>
@@ -358,7 +427,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
             onMouseOver={e => ((e.currentTarget as HTMLElement).style.background = "var(--surface-hover)")}
             onMouseOut={e => ((e.currentTarget as HTMLElement).style.background = "transparent")}>
             <span className="font-semibold uppercase tracking-widest" style={{ fontSize: "9.5px", letterSpacing: "0.1em" }}>
-              Documents {docs.length > 0 ? `(${docs.length})` : ""}
+              Documents {sessionDocs.length > 0 ? `(${sessionDocs.length})` : ""}
             </span>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
               style={{ transform: docsExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms" }}>
@@ -368,6 +437,41 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
           {docsExpanded && (
             <div className="px-3 pb-3 space-y-2">
               <DropZone onFile={handleFile} dragging={dragging} setDragging={setDragging} />
+              {/* URL ingestion */}
+              <div className="flex items-center gap-1.5">
+                <div className="flex-1 flex items-center rounded-lg overflow-hidden"
+                  style={{ border: "1px solid var(--border-strong)", background: "var(--surface-2)" }}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                    className="shrink-0 ml-2" style={{ color: "var(--text-subtle)" }}>
+                    <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
+                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                  </svg>
+                  <input
+                    type="url"
+                    placeholder="Paste URL…"
+                    value={urlInput}
+                    onChange={e => setUrlInput(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && handleIngestUrl()}
+                    className="flex-1 text-xs px-2 py-1.5 outline-none bg-transparent"
+                    style={{ color: "var(--text)" }}
+                    disabled={urlBusy}
+                  />
+                </div>
+                <button
+                  onClick={handleIngestUrl}
+                  disabled={!urlInput.trim() || urlBusy}
+                  className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center cursor-pointer btn-icon"
+                  style={{
+                    background: (!urlInput.trim() || urlBusy) ? "var(--surface-2)" : "var(--accent)",
+                    color: (!urlInput.trim() || urlBusy) ? "var(--text-muted)" : "#000",
+                    border: "1px solid var(--border)",
+                    transition: "all 150ms",
+                  }}>
+                  {urlBusy
+                    ? <Spinner size={10} color="currentColor" />
+                    : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg>}
+                </button>
+              </div>
               {uploadStatus && (
                 <div className="rounded-lg px-3 py-2 text-xs anim-fade"
                   style={{
@@ -378,7 +482,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
                   {uploadStatus}
                 </div>
               )}
-              {docs.length > 0 && (
+              {sessionDocs.length > 0 && (
                 <ul className="space-y-1">
                   {selectedDocIds.size > 0 && (
                     <div className="flex items-center justify-between px-1 mb-1">
@@ -386,7 +490,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
                       <button onClick={() => setSelectedDocIds(new Set())} className="text-xs cursor-pointer" style={{ color: "var(--text-muted)" }}>clear</button>
                     </div>
                   )}
-                  {docs.map(d => (
+                  {sessionDocs.map(d => (
                     <DocItem key={d.doc_id} doc={d} selected={selectedDocIds.has(d.doc_id)}
                       onRemove={handleRemoveDoc}
                       onToggle={id => setSelectedDocIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; })} />
@@ -438,7 +542,8 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
       {activeSession && (
         <ChatArea key={activeSession.id} session={activeSession}
           onSessionUpdate={handleSessionUpdate} docFilter={docFilter}
-          filteredDocNames={filteredDocNames}
+          filteredDocNames={filteredDocNames} ambientGeo={ambientGeo}
+          ttsEnabled={ttsEnabled} onToggleTts={() => setTtsEnabled(v => !v)}
           onNewSession={createNewSession} />
       )}
 
@@ -446,6 +551,9 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
       {memoryOpen && (
         <MemoryDrawer memories={memories} busy={memBusy} refreshing={memRefreshing}
           onClose={() => setMemoryOpen(false)}
+          onDelete={async (id) => {
+            try { await deleteMemory(id); setMemories(m => m.filter(x => x.id !== id)); } catch {}
+          }}
           onClear={async () => { try { await clearMemories(); setMemories([]); } catch {} }} />
       )}
     </div>
@@ -567,9 +675,11 @@ function DocItem({ doc, selected, onRemove, onToggle }: {
 
 // ─── Chat Area ────────────────────────────────────────────────────────────────
 
-function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNewSession }: {
+function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambientGeo, ttsEnabled, onToggleTts, onNewSession }: {
   session: Session; onSessionUpdate: (s: Session) => void;
   docFilter: string[] | null; filteredDocNames: string[] | null;
+  ambientGeo: { lat?: number; lon?: number; city?: string; country?: string } | null;
+  ttsEnabled: boolean; onToggleTts: () => void;
   onNewSession: (mode: ChatMode) => void;
 }) {
   const [messages, setMessages] = useState<Msg[]>(session.messages);
@@ -579,10 +689,20 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
   const [attach, setAttach] = useState<{ text: string; name: string } | null>(null);
   const [attachImage, setAttachImage] = useState<{ data: string; mime: string; name: string } | null>(null);
   const [attachBusy, setAttachBusy] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [sttBusy, setSttBusy] = useState(false);
+  const [ttsPlaying, setTtsPlaying] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sessionIdRef = useRef(session.id);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const sttWsRef = useRef<WebSocket | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const nextPlayTimeRef = useRef(0);
 
   useEffect(() => {
     if (session.id !== sessionIdRef.current) {
@@ -631,24 +751,129 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
     if (t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 140) + "px"; }
   }
 
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4";
+
+      // Open WebSocket to Deepgram proxy
+      const wsUrl = getSttWsUrl();
+      const ws = new WebSocket(wsUrl);
+      sttWsRef.current = ws;
+      let committed = "";
+
+      ws.onmessage = e => {
+        const data = JSON.parse(e.data);
+        if (data.error) return;
+        const { transcript, is_final } = data;
+        if (!transcript) return;
+        if (is_final) {
+          committed = (committed + " " + transcript).trim();
+          setInput(committed);
+          setInterimTranscript("");
+        } else {
+          setInterimTranscript(transcript);
+        }
+      };
+      ws.onerror = () => setSttBusy(false);
+      ws.onclose = () => { setInterimTranscript(""); };
+
+      ws.onopen = () => {
+        const mr = new MediaRecorder(stream, { mimeType });
+        mediaRecorderRef.current = mr;
+        mr.ondataavailable = e => {
+          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) ws.send(e.data);
+        };
+        mr.onstop = () => stream.getTracks().forEach(t => t.stop());
+        mr.start(200); // 200ms chunks — live feel
+      };
+
+      setRecording(true);
+    } catch { /* mic denied */ }
+  }
+
+  function stopRecording() {
+    mediaRecorderRef.current?.stop();
+    mediaRecorderRef.current = null;
+    if (sttWsRef.current?.readyState === WebSocket.OPEN) {
+      sttWsRef.current.send("stop");
+    }
+    sttWsRef.current = null;
+    setRecording(false);
+    setInterimTranscript("");
+    setTimeout(() => textareaRef.current?.focus(), 80);
+  }
+
+  function stopTts() {
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
+    nextPlayTimeRef.current = 0;
+    setTtsPlaying(false);
+  }
+
+  async function playTts(text: string, append = false) {
+    if (!ttsEnabled || !text.trim()) return;
+    if (!append) stopTts();
+
+    let ctx = audioCtxRef.current;
+    if (!ctx || ctx.state === "closed") {
+      ctx = new AudioContext({ sampleRate: 22050 });
+      audioCtxRef.current = ctx;
+      nextPlayTimeRef.current = ctx.currentTime + 0.08;
+    }
+    setTtsPlaying(true);
+
+    try {
+      await streamSpeech(text.slice(0, 1800), (floats, sr) => {
+        if (!audioCtxRef.current || audioCtxRef.current.state === "closed") return;
+        const buf = ctx!.createBuffer(1, floats.length, sr);
+        buf.copyToChannel(floats, 0);
+        const src = ctx!.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx!.destination);
+        const when = Math.max(ctx!.currentTime + 0.01, nextPlayTimeRef.current);
+        src.start(when);
+        nextPlayTimeRef.current = when + buf.duration;
+      });
+      const remaining = (nextPlayTimeRef.current - ctx.currentTime) * 1000;
+      setTimeout(() => setTtsPlaying(false), Math.max(0, remaining));
+    } catch {
+      setTtsPlaying(false);
+    }
+  }
+
   async function doSend(
     q: string,
     pendingAttach: { text: string; name: string } | null,
     pendingImage: { data: string; mime: string; name: string } | null,
     startingMessages: Msg[],
+    sendMode?: ChatMode,
   ) {
+    const effectiveMode = sendMode ?? session.mode;
     setBusy(true);
     const isFirst = startingMessages.length === 0;
-    const retryPayload = { question: q, attachText: pendingAttach?.text, attachName: pendingAttach?.name, imageData: pendingImage?.data, imageMime: pendingImage?.mime };
-    const userLabel = pendingImage ? `${q} [📎 ${pendingImage.name}]` : pendingAttach ? `${q} [📎 ${pendingAttach.name}]` : q;
-    const userMsg: Msg = { role: "user", text: userLabel, mode: session.mode };
+    const retryPayload = { question: q, attachText: pendingAttach?.text, attachName: pendingAttach?.name, imageData: pendingImage?.data, imageMime: pendingImage?.mime, mode: effectiveMode };
+    const userLabel = effectiveMode === "web" ? `🔍 ${q}` : pendingImage ? `${q} [📎 ${pendingImage.name}]` : pendingAttach ? `${q} [📎 ${pendingAttach.name}]` : q;
+    const userMsg: Msg = { role: "user", text: userLabel, mode: effectiveMode };
     const baseMessages = [...startingMessages, userMsg];
 
-    setMessages([...baseMessages, { role: "assistant", text: "", citations: [], mode: session.mode, streaming: true }]);
+    setMessages([...baseMessages, { role: "assistant", text: "", citations: [], mode: effectiveMode, streaming: true }]);
 
     const history: HistoryMessage[] = startingMessages.slice(-20).map(m => ({ role: m.role, content: m.text }));
     let accText = "";
     let accCitations: Citation[] = [];
+    let ttsFired = false;
+    let ttsFiredLen = 0; // char length of text already sent to TTS
+
+    function stripMd(t: string) { return t.replace(/```[\s\S]*?```|`[^`]+`|[*_#>\[\]]/g, " ").trim(); }
+    function maybeFireTts() {
+      if (ttsFired || !ttsEnabled) return;
+      const plain = stripMd(accText);
+      const m = plain.match(/^.{20,}?[.!?]/);
+      if (m) { ttsFired = true; ttsFiredLen = m[0].length; playTts(m[0]); }
+    }
 
     const mkError = (msg: string): Msg => ({
       role: "assistant", text: `⚠ ${msg}`, mode: session.mode, isError: true, retryPayload,
@@ -656,7 +881,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
 
     try {
       await askStream(
-        q, session.mode, docFilter,
+        q, effectiveMode, effectiveMode === "web" ? null : docFilter,
         citations => {
           accCitations = citations;
           setMessages(m => { const c = [...m]; c[c.length - 1] = { ...c[c.length - 1], citations }; return c; });
@@ -671,6 +896,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
               return c;
             });
           });
+          maybeFireTts();
         },
         errMsg => {
           const errMsgs = [...baseMessages, mkError(errMsg)];
@@ -687,6 +913,13 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
             try { title = await generateTitle(q, accText.slice(0, 300)); } catch { title = q.slice(0, 48); }
           }
           onSessionUpdate({ ...session, title, messages: finalMsgs, updatedAt: Date.now() });
+          const fullPlain = stripMd(accText);
+          if (!ttsFired) {
+            playTts(fullPlain);
+          } else {
+            const remainder = fullPlain.slice(ttsFiredLen).trim();
+            if (remainder) playTts(remainder, true); // append after in-flight first sentence
+          }
           setBusy(false);
         },
         history,
@@ -694,6 +927,13 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
         pendingAttach?.name ?? null,
         pendingImage?.data ?? null,
         pendingImage?.mime ?? "image/jpeg",
+        ambientGeo !== null ? {
+          ...ambientGeo,
+          timestamp: new Date().toLocaleString("en-US", {
+            weekday: "long", month: "long", day: "numeric", year: "numeric",
+            hour: "numeric", minute: "2-digit", hour12: true, timeZoneName: "short",
+          }),
+        } : null,
       );
     } catch (err: any) {
       const errMsgs = [...baseMessages, mkError(err.message)];
@@ -706,15 +946,23 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
-    const q = input.trim();
-    if (!q || busy) return;
+    const raw = input.trim();
+    if (!raw || busy) return;
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     const pendingAttach = attach;
     const pendingImage = attachImage;
     setAttach(null);
     setAttachImage(null);
-    await doSend(q, pendingAttach, pendingImage, messages);
+
+    let q = raw;
+    let sendMode: ChatMode | undefined;
+    if (raw.toLowerCase().startsWith("/websearch ")) {
+      q = raw.slice(11).trim();
+      sendMode = "web";
+    }
+    if (!q) return;
+    await doSend(q, pendingAttach, pendingImage, messages, sendMode);
   }
 
   function retryMsg(payload: NonNullable<Msg["retryPayload"]>) {
@@ -725,16 +973,16 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
     const pendingImage = payload.imageData
       ? { data: payload.imageData, mime: payload.imageMime ?? "image/jpeg", name: "image" }
       : null;
-    doSend(payload.question, pendingAttach, pendingImage, messages.slice(0, -2));
+    doSend(payload.question, pendingAttach, pendingImage, messages.slice(0, -2), payload.mode);
   }
 
   const subtitle = session.mode === "personal"
-    ? "Personal mode · memory enabled"
+    ? "Personal mode · memory + knowledge graph"
     : filteredDocNames && filteredDocNames.length > 0
       ? filteredDocNames.length === 1
         ? `Filtered: ${filteredDocNames[0].slice(0, 40)}`
         : `Filtered: ${filteredDocNames.slice(0, 2).map(n => n.split(".")[0]).join(", ")}${filteredDocNames.length > 2 ? ` +${filteredDocNames.length - 2}` : ""}`
-      : "Doc mode · grounded answers";
+      : "Doc mode · grounded answers · /websearch for live web";
 
   return (
     <div className="flex flex-col flex-1 min-w-0 h-full" style={{ background: "var(--bg-solid)" }}>
@@ -838,14 +1086,62 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
               className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed"
               style={{ color: "var(--text)", minHeight: "24px", maxHeight: "140px" }}
               placeholder={
+                recording && interimTranscript ? interimTranscript :
                 attachImage ? "Ask about this image…" :
                 attach ? "Ask about this file…" :
                 session.mode === "doc" ? "Ask about your documents…" : "Chat freely…"
               }
-              value={input} rows={1}
+              value={recording && interimTranscript ? "" : input} rows={1}
               onChange={e => { setInput(e.target.value); autoResizeTextarea(); }}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e as any); } }}
             />
+            {/* Mic button */}
+            <button type="button"
+              disabled={busy || sttBusy || attachBusy}
+              onClick={recording ? stopRecording : startRecording}
+              title={recording ? "Stop recording" : "Voice input"}
+              className="shrink-0 rounded-xl flex items-center justify-center cursor-pointer"
+              style={{
+                width: 32, height: 32,
+                color: recording ? "#fff" : sttBusy ? "var(--accent)" : "var(--text)",
+                background: recording
+                  ? "linear-gradient(135deg, #EF4444, #F87171)"
+                  : sttBusy ? "var(--accent-dim)" : "var(--surface-2)",
+                border: `1.5px solid ${recording ? "#EF4444" : "var(--border-strong)"}`,
+                boxShadow: recording ? "0 0 12px rgba(239,68,68,0.4)" : "none",
+                animation: recording ? "pulse 1.2s ease-in-out infinite" : "none",
+                transition: "all 150ms",
+              }}>
+              {sttBusy
+                ? <Spinner size={13} color="currentColor" />
+                : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="9" y="2" width="6" height="11" rx="3"/>
+                    <path d="M19 10a7 7 0 0 1-14 0"/>
+                    <line x1="12" y1="19" x2="12" y2="22"/>
+                    <line x1="9" y1="22" x2="15" y2="22"/>
+                  </svg>}
+            </button>
+            {/* TTS toggle */}
+            <button type="button"
+              onClick={e => { e.preventDefault(); onToggleTts(); if (ttsPlaying) stopTts(); }}
+              title={ttsEnabled ? (ttsPlaying ? "Speaking… click to stop" : "Voice on — click to mute") : "Voice off — click to enable"}
+              className="shrink-0 rounded-xl flex items-center justify-center cursor-pointer"
+              style={{
+                width: 32, height: 32,
+                color: ttsPlaying ? "#fff" : ttsEnabled ? "var(--text)" : "var(--text-muted)",
+                background: ttsPlaying
+                  ? "linear-gradient(135deg, #22C55E, #4ADE80)"
+                  : ttsEnabled ? "var(--surface-2)" : "transparent",
+                border: `1.5px solid ${ttsEnabled ? "var(--border-strong)" : "var(--border)"}`,
+                boxShadow: ttsPlaying ? "0 0 10px rgba(34,197,94,0.35)" : "none",
+                opacity: ttsEnabled ? 1 : 0.5,
+                transition: "all 150ms",
+              }}>
+              {ttsEnabled
+                ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>}
+            </button>
+            {/* Send button */}
             <button type="submit" disabled={busy || !input.trim()}
               className="shrink-0 rounded-xl w-9 h-9 flex items-center justify-center cursor-pointer send-btn"
               style={{
@@ -987,16 +1283,27 @@ function MessageBubble({ msg, index, onCitationClick, onRetry }: {
         {/* Citations */}
         {msg.citations && msg.citations.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
-            {msg.citations.map((c, j) => (
-              <button key={j} onClick={() => onCitationClick(c)}
-                className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs cursor-pointer btn-icon"
-                style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-muted)", transition: "all 160ms" }}
-                onMouseOver={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--accent-border)"; el.style.color = "var(--accent)"; el.style.background = "var(--accent-dim)"; }}
-                onMouseOut={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--border)"; el.style.color = "var(--text-muted)"; el.style.background = "var(--surface)"; }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
-                {c.source}{c.page_number ? ` · p.${c.page_number}` : ""}
-              </button>
-            ))}
+            {msg.citations.map((c, j) =>
+              c.url ? (
+                <a key={j} href={c.url} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs cursor-pointer btn-icon"
+                  style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-muted)", transition: "all 160ms", textDecoration: "none" }}
+                  onMouseOver={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "rgba(99,102,241,0.4)"; el.style.color = "#818CF8"; el.style.background = "rgba(99,102,241,0.08)"; }}
+                  onMouseOut={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--border)"; el.style.color = "var(--text-muted)"; el.style.background = "var(--surface)"; }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                  {c.source.slice(0, 35)}{c.source.length > 35 ? "…" : ""}
+                </a>
+              ) : (
+                <button key={j} onClick={() => onCitationClick(c)}
+                  className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs cursor-pointer btn-icon"
+                  style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-muted)", transition: "all 160ms" }}
+                  onMouseOver={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--accent-border)"; el.style.color = "var(--accent)"; el.style.background = "var(--accent-dim)"; }}
+                  onMouseOut={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--border)"; el.style.color = "var(--text-muted)"; el.style.background = "var(--surface)"; }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+                  {c.source}{c.page_number ? ` · p.${c.page_number}` : ""}
+                </button>
+              )
+            )}
           </div>
         )}
 
@@ -1059,10 +1366,49 @@ function CitationDrawer({ citation, onClose }: { citation: Citation; onClose: ()
 
 // ─── Memory Drawer ────────────────────────────────────────────────────────────
 
-function MemoryDrawer({ memories, busy, refreshing, onClose, onClear }: {
+function MemoryItem({ item, onDelete }: { item: { id: string; memory: string }; onDelete: (id: string) => void }) {
+  const [hovered, setHovered] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  return (
+    <li
+      className="rounded-xl px-4 py-3 text-sm anim-fade-up flex items-start gap-2"
+      style={{
+        background: hovered ? "var(--surface-hover)" : "var(--surface-2)",
+        border: `1px solid ${hovered ? "var(--border-strong)" : "var(--border)"}`,
+        color: "var(--text)",
+        lineHeight: 1.65,
+        transition: "background 140ms, border-color 140ms",
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}>
+      <span className="shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full" style={{ background: "var(--accent)" }} />
+      <span className="flex-1">{item.memory}</span>
+      <button
+        onClick={async () => { setDeleting(true); await onDelete(item.id); }}
+        disabled={deleting}
+        title="Remove this memory"
+        className="shrink-0 w-5 h-5 rounded-md flex items-center justify-center cursor-pointer"
+        style={{
+          opacity: hovered ? 1 : 0,
+          color: "#F87171",
+          background: hovered ? "rgba(248,113,113,0.12)" : "transparent",
+          border: "1px solid transparent",
+          transition: "opacity 140ms, background 140ms",
+          pointerEvents: hovered ? "auto" : "none",
+          marginTop: "2px",
+        }}>
+        {deleting
+          ? <Spinner size={9} color="#F87171" />
+          : <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>}
+      </button>
+    </li>
+  );
+}
+
+function MemoryDrawer({ memories, busy, refreshing, onClose, onDelete, onClear }: {
   memories: { id: string; memory: string }[];
   busy: boolean; refreshing: boolean;
-  onClose: () => void; onClear: () => void;
+  onClose: () => void; onDelete: (id: string) => Promise<void>; onClear: () => void;
 }) {
   return (
     <>
@@ -1113,18 +1459,7 @@ function MemoryDrawer({ memories, busy, refreshing, onClose, onClear }: {
           ) : (
             <ul className="space-y-2">
               {memories.map((m, i) => (
-                <li key={m.id}
-                  className="rounded-xl px-4 py-3 text-sm anim-fade-up"
-                  style={{
-                    background: "var(--surface-2)",
-                    border: "1px solid var(--border)",
-                    color: "var(--text)",
-                    lineHeight: 1.65,
-                    animationDelay: `${i * 35}ms`,
-                  }}>
-                  <span className="inline-block w-1.5 h-1.5 rounded-full mr-2 align-middle" style={{ background: "var(--accent)", verticalAlign: "middle" }} />
-                  {m.memory}
-                </li>
+                <MemoryItem key={m.id} item={m} onDelete={onDelete} />
               ))}
             </ul>
           )}
