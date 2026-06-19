@@ -87,6 +87,18 @@ class Settings(BaseSettings):
     sarvam_api_keys: str = ""
     murf_api_key: str = ""
 
+    # Neo4j Knowledge Graph
+    neo4j_uri: str = ""
+    neo4j_username: str = "neo4j"
+    neo4j_password: str = ""
+    neo4j_database: str = "neo4j"
+
+    # Web search
+    tavily_api_key: str = ""
+
+    # Ambient context
+    openweathermap_api_key: str = ""
+
     @field_validator(
         "cors_origins",
         "vector_store_order",
