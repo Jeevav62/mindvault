@@ -296,6 +296,41 @@ export async function synthesizeSpeech(text: string): Promise<{ buffer: ArrayBuf
   return { buffer: await res.arrayBuffer(), contentType: res.headers.get("content-type") || "audio/mpeg" };
 }
 
+export async function streamSpeech(
+  text: string,
+  onChunk: (pcmF32le: Float32Array, sampleRate: number) => void,
+): Promise<void> {
+  const res = await fetch(`${API}/tts/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok || !res.body) throw new Error(`TTS stream failed (${res.status})`);
+  const sampleRate = parseInt(res.headers.get("x-tts-sample-rate") || "22050", 10);
+  const reader = res.body.getReader();
+  let remainder = new Uint8Array(0);
+  const BYTES_PER_SAMPLE = 4; // f32le
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value?.length) continue;
+    const combined = new Uint8Array(remainder.length + value.length);
+    combined.set(remainder);
+    combined.set(value, remainder.length);
+    const completeSamples = Math.floor(combined.length / BYTES_PER_SAMPLE);
+    const usableBytes = completeSamples * BYTES_PER_SAMPLE;
+    remainder = combined.slice(usableBytes);
+    if (completeSamples > 0) {
+      onChunk(new Float32Array(combined.buffer, 0, completeSamples), sampleRate);
+    }
+  }
+}
+
+export function getSttWsUrl(): string {
+  const wsBase = API.replace(/^http/, "ws");
+  return `${wsBase}/stt/ws?token=${encodeURIComponent(getToken() ?? "")}`;
+}
+
 export async function generateTitle(question: string, answer: string): Promise<string> {
   const doFetch = () =>
     fetch(`${API}/chat/title`, {

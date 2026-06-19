@@ -6,8 +6,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   askStream, clearMemories, clearToken, deleteDoc, deleteMemory, extractText,
-  generateTitle, getMemories, getToken, getUserId, ingestUrl, login, saveToken, signup,
-  synthesizeSpeech, transcribeAudio, uploadDoc,
+  generateTitle, getMemories, getToken, getUserId, getSttWsUrl, ingestUrl, login,
+  saveToken, signup, streamSpeech, transcribeAudio, uploadDoc,
   type AmbientPayload, type ChatMode, type Citation, type HistoryMessage,
 } from "@/lib/api";
 
@@ -692,6 +692,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
   const [recording, setRecording] = useState(false);
   const [sttBusy, setSttBusy] = useState(false);
   const [ttsPlaying, setTtsPlaying] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -699,6 +700,9 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const sttWsRef = useRef<WebSocket | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const nextPlayTimeRef = useRef(0);
 
   useEffect(() => {
     if (session.id !== sessionIdRef.current) {
@@ -751,45 +755,91 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4";
-      const mr = new MediaRecorder(stream, { mimeType });
-      audioChunksRef.current = [];
-      mr.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-      mr.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop());
-        setSttBusy(true);
-        try {
-          const blob = new Blob(audioChunksRef.current, { type: mimeType });
-          const { text } = await transcribeAudio(blob);
-          if (text.trim()) { setInput(text.trim()); setTimeout(() => textareaRef.current?.focus(), 50); }
-        } catch { /* STT failed silently */ }
-        finally { setSttBusy(false); }
+
+      // Open WebSocket to Deepgram proxy
+      const wsUrl = getSttWsUrl();
+      const ws = new WebSocket(wsUrl);
+      sttWsRef.current = ws;
+      let committed = "";
+
+      ws.onmessage = e => {
+        const data = JSON.parse(e.data);
+        if (data.error) return;
+        const { transcript, is_final } = data;
+        if (!transcript) return;
+        if (is_final) {
+          committed = (committed + " " + transcript).trim();
+          setInput(committed);
+          setInterimTranscript("");
+        } else {
+          setInterimTranscript(transcript);
+        }
       };
-      mr.start();
-      mediaRecorderRef.current = mr;
+      ws.onerror = () => setSttBusy(false);
+      ws.onclose = () => { setInterimTranscript(""); };
+
+      ws.onopen = () => {
+        const mr = new MediaRecorder(stream, { mimeType });
+        mediaRecorderRef.current = mr;
+        mr.ondataavailable = e => {
+          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) ws.send(e.data);
+        };
+        mr.onstop = () => stream.getTracks().forEach(t => t.stop());
+        mr.start(200); // 200ms chunks — live feel
+      };
+
       setRecording(true);
-    } catch { /* microphone denied */ }
+    } catch { /* mic denied */ }
   }
 
   function stopRecording() {
     mediaRecorderRef.current?.stop();
     mediaRecorderRef.current = null;
+    if (sttWsRef.current?.readyState === WebSocket.OPEN) {
+      sttWsRef.current.send("stop");
+    }
+    sttWsRef.current = null;
     setRecording(false);
+    setInterimTranscript("");
+    setTimeout(() => textareaRef.current?.focus(), 80);
+  }
+
+  function stopTts() {
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
+    nextPlayTimeRef.current = 0;
+    setTtsPlaying(false);
   }
 
   async function playTts(text: string) {
     if (!ttsEnabled || !text.trim()) return;
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+    stopTts();
+
+    const ctx = new AudioContext({ sampleRate: 22050 });
+    audioCtxRef.current = ctx;
+    nextPlayTimeRef.current = ctx.currentTime + 0.08;
     setTtsPlaying(true);
+
     try {
-      const { buffer, contentType } = await synthesizeSpeech(text.slice(0, 600));
-      const blob = new Blob([buffer], { type: contentType });
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onended = () => { URL.revokeObjectURL(url); setTtsPlaying(false); audioRef.current = null; };
-      audio.onerror = () => { URL.revokeObjectURL(url); setTtsPlaying(false); audioRef.current = null; };
-      await audio.play();
-    } catch { setTtsPlaying(false); }
+      await streamSpeech(text.slice(0, 600), (floats, sr) => {
+        if (!audioCtxRef.current || audioCtxRef.current.state === "closed") return;
+        const buf = ctx.createBuffer(1, floats.length, sr);
+        buf.copyToChannel(floats, 0);
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx.destination);
+        const when = Math.max(ctx.currentTime + 0.01, nextPlayTimeRef.current);
+        src.start(when);
+        nextPlayTimeRef.current = when + buf.duration;
+      });
+      // wait for last buffer to finish then mark done
+      const remaining = (nextPlayTimeRef.current - ctx.currentTime) * 1000;
+      setTimeout(() => setTtsPlaying(false), Math.max(0, remaining));
+    } catch {
+      setTtsPlaying(false);
+    }
   }
 
   async function doSend(
@@ -1027,11 +1077,12 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
               className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed"
               style={{ color: "var(--text)", minHeight: "24px", maxHeight: "140px" }}
               placeholder={
+                recording && interimTranscript ? interimTranscript :
                 attachImage ? "Ask about this image…" :
                 attach ? "Ask about this file…" :
                 session.mode === "doc" ? "Ask about your documents…" : "Chat freely…"
               }
-              value={input} rows={1}
+              value={recording && interimTranscript ? "" : input} rows={1}
               onChange={e => { setInput(e.target.value); autoResizeTextarea(); }}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e as any); } }}
             />
@@ -1063,7 +1114,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
             </button>
             {/* TTS toggle */}
             <button type="button"
-              onClick={e => { e.preventDefault(); onToggleTts(); if (ttsPlaying && audioRef.current) { audioRef.current.pause(); audioRef.current = null; setTtsPlaying(false); } }}
+              onClick={e => { e.preventDefault(); onToggleTts(); if (ttsPlaying) stopTts(); }}
               title={ttsEnabled ? (ttsPlaying ? "Speaking… click to stop" : "Voice on — click to mute") : "Voice off — click to enable"}
               className="shrink-0 rounded-xl flex items-center justify-center cursor-pointer"
               style={{
