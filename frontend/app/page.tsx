@@ -27,6 +27,7 @@ type Session = {
   title: string;
   mode: ChatMode;
   messages: Msg[];
+  docs: DocFile[];
   createdAt: number;
   updatedAt: number;
 };
@@ -34,11 +35,15 @@ type Session = {
 type DocFile = { filename: string; chunk_count: number; doc_id: string };
 
 function newSession(mode: ChatMode = "doc"): Session {
-  return { id: crypto.randomUUID(), title: "New Chat", mode, messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+  return { id: crypto.randomUUID(), title: "New Chat", mode, messages: [], docs: [], createdAt: Date.now(), updatedAt: Date.now() };
 }
 
 function loadSessions(uid: string): Session[] {
-  try { const r = localStorage.getItem(`rag.sessions.${uid}`); return r ? JSON.parse(r) : []; } catch { return []; }
+  try {
+    const r = localStorage.getItem(`rag.sessions.${uid}`);
+    const sessions = r ? JSON.parse(r) : [];
+    return sessions.map((s: Session) => ({ docs: [], ...s }));
+  } catch { return []; }
 }
 function saveSessions(uid: string, s: Session[]) { localStorage.setItem(`rag.sessions.${uid}`, JSON.stringify(s)); }
 
@@ -229,10 +234,6 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     const s = loadSessions(uid);
     return s.length > 0 ? s.sort((a, b) => b.updatedAt - a.updatedAt)[0].id : "";
   });
-  const [docs, setDocs] = useState<DocFile[]>(() => {
-    if (typeof window === "undefined") return [];
-    try { return JSON.parse(localStorage.getItem(`rag.docs.${uid}`) || "[]"); } catch { return []; }
-  });
   const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState("");
@@ -272,7 +273,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   }, []);
 
   useEffect(() => { saveSessions(uid, sessions); }, [sessions]);
-  useEffect(() => { localStorage.setItem(`rag.docs.${uid}`, JSON.stringify(docs)); }, [docs]);
+  useEffect(() => { setSelectedDocIds(new Set()); }, [activeId]);
 
   const activeSession = sessions.find(s => s.id === activeId) ?? sessions[0];
 
@@ -287,6 +288,8 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   }
 
   function deleteSession(id: string) {
+    const toDelete = sessions.find(s => s.id === id);
+    toDelete?.docs.forEach(d => deleteDoc(d.doc_id).catch(() => {}));
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id);
       if (next.length === 0) { const s = newSession(); setActiveId(s.id); return [s]; }
@@ -306,6 +309,12 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     return () => document.removeEventListener("keydown", handler);
   }, [activeSession?.mode]);
 
+  function addDocToSession(doc: DocFile) {
+    setSessions(prev => prev.map(s =>
+      s.id === activeId ? { ...s, docs: [...s.docs, doc] } : s
+    ));
+  }
+
   async function handleIngestUrl() {
     const url = urlInput.trim();
     if (!url || urlBusy) return;
@@ -314,7 +323,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     setUploadStatus("Fetching page via Apify…");
     try {
       const r = await ingestUrl(url);
-      setDocs(d => [...d, { filename: r.filename, chunk_count: r.chunk_count, doc_id: r.doc_id }]);
+      addDocToSession({ filename: r.filename, chunk_count: r.chunk_count, doc_id: r.doc_id });
       setUploadStatus(`✓ ${r.filename} — ${r.chunk_count} chunks`);
       setTimeout(() => setUploadStatus(null), 4000);
     } catch (err: any) {
@@ -328,14 +337,16 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     setUploadStatus(`Uploading ${file.name}…`);
     try {
       const r = await uploadDoc(file);
-      setDocs(d => [...d, { filename: r.filename, chunk_count: r.chunk_count, doc_id: r.doc_id }]);
+      addDocToSession({ filename: r.filename, chunk_count: r.chunk_count, doc_id: r.doc_id });
       setUploadStatus(`✓ ${r.filename} — ${r.chunk_count} chunks`);
       setTimeout(() => setUploadStatus(null), 3500);
     } catch (err: any) { setUploadStatus(`Upload failed: ${err.message}`); }
   }
 
   async function handleRemoveDoc(docId: string) {
-    setDocs(d => d.filter(x => x.doc_id !== docId));
+    setSessions(prev => prev.map(s =>
+      s.id === activeId ? { ...s, docs: s.docs.filter(d => d.doc_id !== docId) } : s
+    ));
     setSelectedDocIds(s => { const n = new Set(s); n.delete(docId); return n; });
     try { await deleteDoc(docId); } catch {}
   }
@@ -349,10 +360,13 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     finally { setMemBusy(false); setMemRefreshing(false); }
   }
 
-  const docFilter = selectedDocIds.size > 0 ? [...selectedDocIds] : null;
-  const filteredDocNames = selectedDocIds.size > 0
-    ? docs.filter(d => selectedDocIds.has(d.doc_id)).map(d => d.filename)
+  const sessionDocs = activeSession?.docs ?? [];
+  const docFilter = sessionDocs.length > 0
+    ? (selectedDocIds.size > 0 ? [...selectedDocIds] : sessionDocs.map(d => d.doc_id))
     : null;
+  const filteredDocNames = selectedDocIds.size > 0
+    ? sessionDocs.filter(d => selectedDocIds.has(d.doc_id)).map(d => d.filename)
+    : sessionDocs.length > 0 ? sessionDocs.map(d => d.filename) : null;
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: "var(--bg-solid)" }}>
@@ -405,7 +419,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
             onMouseOver={e => ((e.currentTarget as HTMLElement).style.background = "var(--surface-hover)")}
             onMouseOut={e => ((e.currentTarget as HTMLElement).style.background = "transparent")}>
             <span className="font-semibold uppercase tracking-widest" style={{ fontSize: "9.5px", letterSpacing: "0.1em" }}>
-              Documents {docs.length > 0 ? `(${docs.length})` : ""}
+              Documents {sessionDocs.length > 0 ? `(${sessionDocs.length})` : ""}
             </span>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
               style={{ transform: docsExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms" }}>
@@ -460,7 +474,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
                   {uploadStatus}
                 </div>
               )}
-              {docs.length > 0 && (
+              {sessionDocs.length > 0 && (
                 <ul className="space-y-1">
                   {selectedDocIds.size > 0 && (
                     <div className="flex items-center justify-between px-1 mb-1">
@@ -468,7 +482,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
                       <button onClick={() => setSelectedDocIds(new Set())} className="text-xs cursor-pointer" style={{ color: "var(--text-muted)" }}>clear</button>
                     </div>
                   )}
-                  {docs.map(d => (
+                  {sessionDocs.map(d => (
                     <DocItem key={d.doc_id} doc={d} selected={selectedDocIds.has(d.doc_id)}
                       onRemove={handleRemoveDoc}
                       onToggle={id => setSelectedDocIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; })} />
