@@ -813,28 +813,30 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
     setTtsPlaying(false);
   }
 
-  async function playTts(text: string) {
+  async function playTts(text: string, append = false) {
     if (!ttsEnabled || !text.trim()) return;
-    stopTts();
+    if (!append) stopTts();
 
-    const ctx = new AudioContext({ sampleRate: 22050 });
-    audioCtxRef.current = ctx;
-    nextPlayTimeRef.current = ctx.currentTime + 0.08;
+    let ctx = audioCtxRef.current;
+    if (!ctx || ctx.state === "closed") {
+      ctx = new AudioContext({ sampleRate: 22050 });
+      audioCtxRef.current = ctx;
+      nextPlayTimeRef.current = ctx.currentTime + 0.08;
+    }
     setTtsPlaying(true);
 
     try {
-      await streamSpeech(text.slice(0, 600), (floats, sr) => {
+      await streamSpeech(text.slice(0, 1800), (floats, sr) => {
         if (!audioCtxRef.current || audioCtxRef.current.state === "closed") return;
-        const buf = ctx.createBuffer(1, floats.length, sr);
+        const buf = ctx!.createBuffer(1, floats.length, sr);
         buf.copyToChannel(floats, 0);
-        const src = ctx.createBufferSource();
+        const src = ctx!.createBufferSource();
         src.buffer = buf;
-        src.connect(ctx.destination);
-        const when = Math.max(ctx.currentTime + 0.01, nextPlayTimeRef.current);
+        src.connect(ctx!.destination);
+        const when = Math.max(ctx!.currentTime + 0.01, nextPlayTimeRef.current);
         src.start(when);
         nextPlayTimeRef.current = when + buf.duration;
       });
-      // wait for last buffer to finish then mark done
       const remaining = (nextPlayTimeRef.current - ctx.currentTime) * 1000;
       setTimeout(() => setTtsPlaying(false), Math.max(0, remaining));
     } catch {
@@ -863,13 +865,14 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
     let accText = "";
     let accCitations: Citation[] = [];
     let ttsFired = false;
+    let ttsFiredLen = 0; // char length of text already sent to TTS
 
     function stripMd(t: string) { return t.replace(/```[\s\S]*?```|`[^`]+`|[*_#>\[\]]/g, " ").trim(); }
     function maybeFireTts() {
       if (ttsFired || !ttsEnabled) return;
       const plain = stripMd(accText);
-      const m = plain.match(/^.{50,}?[.!?]/);
-      if (m) { ttsFired = true; playTts(m[0]); }
+      const m = plain.match(/^.{20,}?[.!?]/);
+      if (m) { ttsFired = true; ttsFiredLen = m[0].length; playTts(m[0]); }
     }
 
     const mkError = (msg: string): Msg => ({
@@ -910,7 +913,13 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
             try { title = await generateTitle(q, accText.slice(0, 300)); } catch { title = q.slice(0, 48); }
           }
           onSessionUpdate({ ...session, title, messages: finalMsgs, updatedAt: Date.now() });
-          if (!ttsFired) playTts(stripMd(accText).slice(0, 200));
+          const fullPlain = stripMd(accText);
+          if (!ttsFired) {
+            playTts(fullPlain);
+          } else {
+            const remainder = fullPlain.slice(ttsFiredLen).trim();
+            if (remainder) playTts(remainder, true); // append after in-flight first sentence
+          }
           setBusy(false);
         },
         history,
