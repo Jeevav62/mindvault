@@ -131,6 +131,71 @@ h1, h2, h3, h4 {
   0%   { transform: scale(1);    opacity: 0.6; }
   100% { transform: scale(1.6);  opacity: 0;   }
 }
+@keyframes pulse {
+  0%,100% { opacity: 1;   transform: scale(1);   }
+  50%     { opacity: 0.4; transform: scale(0.8); }
+}
+@keyframes float {
+  0%,100% { transform: translateY(0);     }
+  50%     { transform: translateY(-12px); }
+}
+@keyframes marquee {
+  from { transform: translateX(0);     }
+  to   { transform: translateX(-50%);  }
+}
+@keyframes gradientShift {
+  0%,100% { background-position: 0% 50%;   }
+  50%     { background-position: 100% 50%; }
+}
+@keyframes flowDash {
+  to { stroke-dashoffset: -24; }
+}
+@keyframes glowPulse {
+  0%,100% { box-shadow: 0 0 24px rgba(34,197,94,0.18); }
+  50%     { box-shadow: 0 0 44px rgba(34,197,94,0.40); }
+}
+
+/* ── Scroll reveal ──────────────────────────────────────── */
+.reveal {
+  opacity: 0;
+  transform: translateY(28px);
+  transition: opacity 700ms cubic-bezier(.22,1,.36,1), transform 700ms cubic-bezier(.22,1,.36,1);
+  will-change: opacity, transform;
+}
+.reveal.in { opacity: 1; transform: translateY(0); }
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity: 1; transform: none; transition: none; }
+  .marquee-track { animation: none !important; }
+}
+
+/* ── Landing helpers ────────────────────────────────────── */
+.marquee-track { animation: marquee 32s linear infinite; }
+.marquee-mask {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+.lift {
+  transition: transform 240ms cubic-bezier(.22,1,.36,1), box-shadow 240ms, border-color 240ms;
+  will-change: transform;
+}
+.lift:hover { transform: translateY(-4px); }
+.grad-text {
+  background: linear-gradient(135deg, #22C55E, #4ADE80, #86EFAC, #4ADE80);
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: gradientShift 8s ease infinite;
+}
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(34,197,94,0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34,197,94,0.045) 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 75%);
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 75%);
+}
 
 /* ── Component classes ──────────────────────────────────── */
 
