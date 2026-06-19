@@ -15,6 +15,8 @@ from app.chat.router import router as chat_router
 from app.graph.client import aclose as graph_aclose
 from app.ingest.router import router as ingest_router
 from app.memory.router import router as memory_router
+from app.stt.router import router as stt_router
+from app.tts.router import router as tts_router
 from app.providers import _http
 
 logging.basicConfig(level=logging.INFO)
@@ -69,6 +71,8 @@ def create_app() -> FastAPI:
     app.include_router(ingest_router)
     app.include_router(chat_router)
     app.include_router(memory_router)
+    app.include_router(stt_router)
+    app.include_router(tts_router)
     return app
 
 
