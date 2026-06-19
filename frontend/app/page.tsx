@@ -7,7 +7,7 @@ import remarkGfm from "remark-gfm";
 import {
   askStream, clearMemories, clearToken, deleteDoc, extractText,
   generateTitle, getMemories, getToken, getUserId, login, saveToken, signup, uploadDoc,
-  type ChatMode, type Citation, type HistoryMessage,
+  type AmbientPayload, type ChatMode, type Citation, type HistoryMessage,
 } from "@/lib/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -19,7 +19,7 @@ type Msg = {
   mode?: ChatMode;
   streaming?: boolean;
   isError?: boolean;
-  retryPayload?: { question: string; attachText?: string | null; attachName?: string | null; imageData?: string | null; imageMime?: string };
+  retryPayload?: { question: string; attachText?: string | null; attachName?: string | null; imageData?: string | null; imageMime?: string; mode?: ChatMode };
 };
 
 type Session = {
@@ -241,6 +241,34 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   const [memories, setMemories] = useState<{ id: string; memory: string }[]>([]);
   const [memBusy, setMemBusy] = useState(false);
   const [memRefreshing, setMemRefreshing] = useState(false);
+  const [ambientPayload, setAmbientPayload] = useState<AmbientPayload | null>(null);
+
+  useEffect(() => {
+    const ts = new Date().toISOString();
+    if (!navigator.geolocation) { setAmbientPayload({ timestamp: ts }); return; }
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        try {
+          const r = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
+            { headers: { "User-Agent": "rag-chat-personal/1.0" } }
+          );
+          const data = await r.json();
+          setAmbientPayload({
+            lat, lon, timestamp: ts,
+            city: data.address?.city || data.address?.town || data.address?.village || undefined,
+            country: data.address?.country || undefined,
+          });
+        } catch {
+          setAmbientPayload({ lat, lon, timestamp: ts });
+        }
+      },
+      () => setAmbientPayload({ timestamp: ts }),
+      { timeout: 5000 },
+    );
+  }, []);
 
   useEffect(() => { saveSessions(uid, sessions); }, [sessions]);
   useEffect(() => { localStorage.setItem(`rag.docs.${uid}`, JSON.stringify(docs)); }, [docs]);
@@ -438,7 +466,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
       {activeSession && (
         <ChatArea key={activeSession.id} session={activeSession}
           onSessionUpdate={handleSessionUpdate} docFilter={docFilter}
-          filteredDocNames={filteredDocNames}
+          filteredDocNames={filteredDocNames} ambientPayload={ambientPayload}
           onNewSession={createNewSession} />
       )}
 
@@ -567,9 +595,10 @@ function DocItem({ doc, selected, onRemove, onToggle }: {
 
 // ─── Chat Area ────────────────────────────────────────────────────────────────
 
-function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNewSession }: {
+function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambientPayload, onNewSession }: {
   session: Session; onSessionUpdate: (s: Session) => void;
   docFilter: string[] | null; filteredDocNames: string[] | null;
+  ambientPayload: AmbientPayload | null;
   onNewSession: (mode: ChatMode) => void;
 }) {
   const [messages, setMessages] = useState<Msg[]>(session.messages);
@@ -636,15 +665,17 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
     pendingAttach: { text: string; name: string } | null,
     pendingImage: { data: string; mime: string; name: string } | null,
     startingMessages: Msg[],
+    sendMode?: ChatMode,
   ) {
+    const effectiveMode = sendMode ?? session.mode;
     setBusy(true);
     const isFirst = startingMessages.length === 0;
-    const retryPayload = { question: q, attachText: pendingAttach?.text, attachName: pendingAttach?.name, imageData: pendingImage?.data, imageMime: pendingImage?.mime };
-    const userLabel = pendingImage ? `${q} [📎 ${pendingImage.name}]` : pendingAttach ? `${q} [📎 ${pendingAttach.name}]` : q;
-    const userMsg: Msg = { role: "user", text: userLabel, mode: session.mode };
+    const retryPayload = { question: q, attachText: pendingAttach?.text, attachName: pendingAttach?.name, imageData: pendingImage?.data, imageMime: pendingImage?.mime, mode: effectiveMode };
+    const userLabel = effectiveMode === "web" ? `🔍 ${q}` : pendingImage ? `${q} [📎 ${pendingImage.name}]` : pendingAttach ? `${q} [📎 ${pendingAttach.name}]` : q;
+    const userMsg: Msg = { role: "user", text: userLabel, mode: effectiveMode };
     const baseMessages = [...startingMessages, userMsg];
 
-    setMessages([...baseMessages, { role: "assistant", text: "", citations: [], mode: session.mode, streaming: true }]);
+    setMessages([...baseMessages, { role: "assistant", text: "", citations: [], mode: effectiveMode, streaming: true }]);
 
     const history: HistoryMessage[] = startingMessages.slice(-20).map(m => ({ role: m.role, content: m.text }));
     let accText = "";
@@ -656,7 +687,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
 
     try {
       await askStream(
-        q, session.mode, docFilter,
+        q, effectiveMode, effectiveMode === "web" ? null : docFilter,
         citations => {
           accCitations = citations;
           setMessages(m => { const c = [...m]; c[c.length - 1] = { ...c[c.length - 1], citations }; return c; });
@@ -694,6 +725,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
         pendingAttach?.name ?? null,
         pendingImage?.data ?? null,
         pendingImage?.mime ?? "image/jpeg",
+        ambientPayload,
       );
     } catch (err: any) {
       const errMsgs = [...baseMessages, mkError(err.message)];
@@ -706,15 +738,23 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
-    const q = input.trim();
-    if (!q || busy) return;
+    const raw = input.trim();
+    if (!raw || busy) return;
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     const pendingAttach = attach;
     const pendingImage = attachImage;
     setAttach(null);
     setAttachImage(null);
-    await doSend(q, pendingAttach, pendingImage, messages);
+
+    let q = raw;
+    let sendMode: ChatMode | undefined;
+    if (raw.toLowerCase().startsWith("/websearch ")) {
+      q = raw.slice(11).trim();
+      sendMode = "web";
+    }
+    if (!q) return;
+    await doSend(q, pendingAttach, pendingImage, messages, sendMode);
   }
 
   function retryMsg(payload: NonNullable<Msg["retryPayload"]>) {
@@ -725,16 +765,16 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, onNew
     const pendingImage = payload.imageData
       ? { data: payload.imageData, mime: payload.imageMime ?? "image/jpeg", name: "image" }
       : null;
-    doSend(payload.question, pendingAttach, pendingImage, messages.slice(0, -2));
+    doSend(payload.question, pendingAttach, pendingImage, messages.slice(0, -2), payload.mode);
   }
 
   const subtitle = session.mode === "personal"
-    ? "Personal mode · memory enabled"
+    ? "Personal mode · memory + knowledge graph"
     : filteredDocNames && filteredDocNames.length > 0
       ? filteredDocNames.length === 1
         ? `Filtered: ${filteredDocNames[0].slice(0, 40)}`
         : `Filtered: ${filteredDocNames.slice(0, 2).map(n => n.split(".")[0]).join(", ")}${filteredDocNames.length > 2 ? ` +${filteredDocNames.length - 2}` : ""}`
-      : "Doc mode · grounded answers";
+      : "Doc mode · grounded answers · /websearch for live web";
 
   return (
     <div className="flex flex-col flex-1 min-w-0 h-full" style={{ background: "var(--bg-solid)" }}>
@@ -987,16 +1027,27 @@ function MessageBubble({ msg, index, onCitationClick, onRetry }: {
         {/* Citations */}
         {msg.citations && msg.citations.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
-            {msg.citations.map((c, j) => (
-              <button key={j} onClick={() => onCitationClick(c)}
-                className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs cursor-pointer btn-icon"
-                style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-muted)", transition: "all 160ms" }}
-                onMouseOver={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--accent-border)"; el.style.color = "var(--accent)"; el.style.background = "var(--accent-dim)"; }}
-                onMouseOut={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--border)"; el.style.color = "var(--text-muted)"; el.style.background = "var(--surface)"; }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
-                {c.source}{c.page_number ? ` · p.${c.page_number}` : ""}
-              </button>
-            ))}
+            {msg.citations.map((c, j) =>
+              c.url ? (
+                <a key={j} href={c.url} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs cursor-pointer btn-icon"
+                  style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-muted)", transition: "all 160ms", textDecoration: "none" }}
+                  onMouseOver={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "rgba(99,102,241,0.4)"; el.style.color = "#818CF8"; el.style.background = "rgba(99,102,241,0.08)"; }}
+                  onMouseOut={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--border)"; el.style.color = "var(--text-muted)"; el.style.background = "var(--surface)"; }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                  {c.source.slice(0, 35)}{c.source.length > 35 ? "…" : ""}
+                </a>
+              ) : (
+                <button key={j} onClick={() => onCitationClick(c)}
+                  className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs cursor-pointer btn-icon"
+                  style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-muted)", transition: "all 160ms" }}
+                  onMouseOver={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--accent-border)"; el.style.color = "var(--accent)"; el.style.background = "var(--accent-dim)"; }}
+                  onMouseOut={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--border)"; el.style.color = "var(--text-muted)"; el.style.background = "var(--surface)"; }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+                  {c.source}{c.page_number ? ` · p.${c.page_number}` : ""}
+                </button>
+              )
+            )}
           </div>
         )}
 

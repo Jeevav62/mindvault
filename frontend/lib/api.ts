@@ -8,9 +8,18 @@ export type Citation = {
   score: number;
   page_number: number | null;
   chunk_text: string;
+  url?: string | null;
 };
 
-export type ChatMode = "doc" | "personal";
+export type AmbientPayload = {
+  lat?: number;
+  lon?: number;
+  city?: string;
+  country?: string;
+  timestamp?: string;
+};
+
+export type ChatMode = "doc" | "personal" | "web";
 
 const TOKEN_KEY = "rag.access";
 const REFRESH_KEY = "rag.refresh";
@@ -177,6 +186,7 @@ export async function askStream(
   attachmentName?: string | null,
   imageData?: string | null,
   imageMime?: string,
+  ambientPayload?: AmbientPayload | null,
 ): Promise<void> {
   const makeReq = () =>
     fetch(`${API}/chat/stream`, {
@@ -191,6 +201,7 @@ export async function askStream(
         attachment_name: attachmentName ?? null,
         image_data: imageData ?? null,
         image_mime: imageMime ?? "image/jpeg",
+        ambient_payload: ambientPayload ?? null,
       }),
     });
 
