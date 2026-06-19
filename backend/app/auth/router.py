@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+import asyncio
+
 from app.config import get_settings
 from app.limiter import limiter
+from app.email import send_approval_request_email
+from app.auth.security import create_approval_token
 
 from .dependencies import get_current_user
 from .repository import UserExists, UserRecord, get_user_repository
@@ -49,11 +53,18 @@ async def signup(request: Request, body: SignupRequest) -> TokenResponse:
     except UserExists:
         raise HTTPException(status.HTTP_409_CONFLICT, "email already registered")
     if user.status == "pending":
-        # Return tokens but frontend must detect pending status
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "pending_approval",
-        )
+        # Fire approval email to admin in background (don't block signup response)
+        s = get_settings()
+        if s.admin_email:
+            approval_token = create_approval_token(user.id)
+            approve_url = f"{s.app_base_url}/admin/approve-link?token={approval_token}"
+            asyncio.create_task(
+                send_approval_request_email(
+                    new_user_email=str(body.email),
+                    approve_url=approve_url,
+                )
+            )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "pending_approval")
     return _tokens(user.id)
 
 

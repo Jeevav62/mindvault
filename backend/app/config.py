@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     # Admin — only this email is auto-approved; everyone else needs manual approval
     admin_email: str = ""
 
+    # Email (Resend — https://resend.com free tier, no domain needed to send to yourself)
+    resend_api_key: str = ""
+    app_base_url: str = "http://localhost:8000"  # used to build approval link in emails
+
     @field_validator(
         "cors_origins",
         "vector_store_order",
