@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import Landing from "./components/Landing";
 import {
   approveUser, askStream, clearMemories, clearToken, deleteDoc, deleteMemory, extractText,
   generateTitle, getMemories, getPendingUsers, getToken, getUserId, getSttWsUrl, getUsage,
@@ -45,7 +46,7 @@ function loadSessions(uid: string): Session[] {
   try {
     const r = localStorage.getItem(`rag.sessions.${uid}`);
     const sessions = r ? JSON.parse(r) : [];
-    return sessions.map((s: Session) => ({ docs: [], ...s }));
+    return sessions.map((s: Session) => ({ ...s, docs: s.docs ?? [] }));
   } catch { return []; }
 }
 function saveSessions(uid: string, s: Session[]) { localStorage.setItem(`rag.sessions.${uid}`, JSON.stringify(s)); }
@@ -77,194 +78,8 @@ export default function Home() {
 
   if (authed) return <AppLayout onLogout={() => { setAuthed(false); setShowLanding(true); }} />;
   if (pendingEmail) return <PendingApprovalPage email={pendingEmail} onBack={() => setPendingEmail(null)} />;
-  if (showLanding) return <LandingPage onGetStarted={() => setShowLanding(false)} />;
+  if (showLanding) return <Landing onGetStarted={() => setShowLanding(false)} />;
   return <AuthPage onAuthed={() => setAuthed(true)} onPending={(email) => setPendingEmail(email)} />;
-}
-
-// ─── Landing Page ─────────────────────────────────────────────────────────────
-
-function LandingPage({ onGetStarted }: { onGetStarted: () => void }) {
-  const features = [
-    {
-      icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>,
-      title: "Document RAG",
-      desc: "Upload PDFs and text files. Ask anything — answers are grounded with citations from your own docs.",
-      color: "#22C55E",
-    },
-    {
-      icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><ellipse cx="12" cy="12" rx="10" ry="5"/><ellipse cx="12" cy="12" rx="10" ry="5" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="5" transform="rotate(120 12 12)"/></svg>,
-      title: "Long-term Memory",
-      desc: "Remembers facts about you across every session. The more you chat, the smarter it gets.",
-      color: "#818CF8",
-    },
-    {
-      icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M19 10a7 7 0 0 1-14 0"/><line x1="12" y1="19" x2="12" y2="22"/></svg>,
-      title: "Voice Chat",
-      desc: "Speak your questions and hear the answers. Streaming STT via Deepgram, streaming TTS via Cartesia.",
-      color: "#F59E0B",
-    },
-    {
-      icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>,
-      title: "Web Search",
-      desc: "Prefix any message with /websearch for real-time web results fused with your personal context.",
-      color: "#38BDF8",
-    },
-  ];
-
-  const stack = ["FastAPI", "Next.js", "Qdrant", "Neo4j", "Groq", "Deepgram", "Cartesia", "Supabase", "Voyage AI"];
-
-  return (
-    <main className="min-h-screen overflow-y-auto relative" style={{ background: "var(--bg-solid)", color: "var(--text)" }}>
-      {/* Background orbs */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden" style={{ zIndex: 0 }}>
-        <div style={{ position: "absolute", width: 700, height: 700, borderRadius: "50%", background: "radial-gradient(circle, rgba(34,197,94,0.06) 0%, transparent 65%)", top: "-200px", left: "-200px", animation: "orbitA 20s ease-in-out infinite" }} />
-        <div style={{ position: "absolute", width: 500, height: 500, borderRadius: "50%", background: "radial-gradient(circle, rgba(99,102,241,0.05) 0%, transparent 65%)", bottom: "0", right: "-100px", animation: "orbitB 26s ease-in-out infinite" }} />
-        <div style={{ position: "absolute", width: 400, height: 400, borderRadius: "50%", background: "radial-gradient(circle, rgba(34,197,94,0.04) 0%, transparent 65%)", top: "50%", right: "25%", animation: "orbitC 18s ease-in-out infinite" }} />
-      </div>
-
-      <div className="relative z-10 max-w-5xl mx-auto px-6">
-        {/* ── Nav ── */}
-        <nav className="flex items-center justify-between py-6">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl flex items-center justify-center text-black font-bold text-sm"
-              style={{ background: "linear-gradient(135deg, #22C55E, #4ADE80)", boxShadow: "0 0 16px rgba(34,197,94,0.35)" }}>R</div>
-            <span className="font-bold text-base" style={{ fontFamily: "JetBrains Mono, monospace" }}>
-              RAG<span style={{ color: "var(--accent)" }}>.</span>chat
-            </span>
-          </div>
-          <button
-            onClick={onGetStarted}
-            className="px-5 py-2 rounded-xl text-sm font-semibold cursor-pointer"
-            style={{
-              background: "var(--surface)", border: "1px solid var(--border-strong)",
-              color: "var(--text)", fontFamily: "JetBrains Mono, monospace", transition: "all 160ms",
-            }}
-            onMouseOver={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--accent-border)"; el.style.color = "var(--accent)"; }}
-            onMouseOut={e => { const el = e.currentTarget as HTMLElement; el.style.borderColor = "var(--border-strong)"; el.style.color = "var(--text)"; }}>
-            Sign in
-          </button>
-        </nav>
-
-        {/* ── Hero ── */}
-        <section className="text-center pt-16 pb-20 anim-fade-up">
-          {/* Badge */}
-          <div className="inline-flex items-center gap-2 rounded-full px-4 py-1.5 mb-8 text-xs font-medium"
-            style={{ background: "var(--accent-dim)", border: "1px solid var(--accent-border)", color: "var(--accent)", fontFamily: "JetBrains Mono, monospace" }}>
-            <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: "var(--accent)", animation: "pulse 2s ease-in-out infinite" }} />
-            Streaming LLM · STT · TTS — all live
-          </div>
-
-          <h1 className="text-5xl sm:text-6xl font-extrabold leading-tight mb-6"
-            style={{ fontFamily: "JetBrains Mono, monospace", letterSpacing: "-1.5px" }}>
-            Your AI that{" "}
-            <span style={{
-              background: "linear-gradient(135deg, #22C55E, #4ADE80, #86EFAC)",
-              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
-            }}>
-              remembers you.
-            </span>
-          </h1>
-
-          <p className="text-lg max-w-2xl mx-auto leading-relaxed mb-10" style={{ color: "var(--text-muted)" }}>
-            Upload documents, chat naturally, speak your thoughts. A personal RAG chatbot with long-term memory, voice I/O, and real-time web search — all with multi-provider AI fallback chains.
-          </p>
-
-          <div className="flex items-center justify-center gap-4 flex-wrap">
-            <button
-              onClick={onGetStarted}
-              className="flex items-center gap-2.5 px-8 py-3.5 rounded-2xl text-sm font-bold cursor-pointer send-btn relative overflow-hidden"
-              style={{
-                background: "linear-gradient(135deg, #22C55E, #4ADE80)",
-                color: "#000",
-                fontFamily: "JetBrains Mono, monospace",
-                boxShadow: "0 0 32px rgba(34,197,94,0.4), 0 4px 20px rgba(0,0,0,0.4)",
-                transition: "all 200ms",
-              }}>
-              Get Started — it&apos;s free
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg>
-            </button>
-          </div>
-        </section>
-
-        {/* ── Feature cards ── */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 gap-5 pb-20">
-          {features.map((f, i) => (
-            <div
-              key={i}
-              className="rounded-2xl p-6 anim-fade-up"
-              style={{
-                background: "var(--surface)",
-                border: "1px solid var(--border-strong)",
-                boxShadow: "var(--shadow-sm)",
-                animationDelay: `${i * 80}ms`,
-                transition: "transform 200ms, box-shadow 200ms, border-color 200ms",
-              }}
-              onMouseOver={e => {
-                const el = e.currentTarget as HTMLElement;
-                el.style.transform = "translateY(-3px)";
-                el.style.boxShadow = `0 12px 40px rgba(0,0,0,0.4), 0 0 0 1px ${f.color}28`;
-                el.style.borderColor = `${f.color}44`;
-              }}
-              onMouseOut={e => {
-                const el = e.currentTarget as HTMLElement;
-                el.style.transform = "translateY(0)";
-                el.style.boxShadow = "var(--shadow-sm)";
-                el.style.borderColor = "var(--border-strong)";
-              }}>
-              <div className="w-11 h-11 rounded-xl flex items-center justify-center mb-4"
-                style={{ background: `${f.color}18`, color: f.color, border: `1px solid ${f.color}30` }}>
-                {f.icon}
-              </div>
-              <h3 className="font-bold text-base mb-2" style={{ fontFamily: "JetBrains Mono, monospace" }}>{f.title}</h3>
-              <p className="text-sm leading-relaxed" style={{ color: "var(--text-muted)" }}>{f.desc}</p>
-            </div>
-          ))}
-        </section>
-
-        {/* ── Tech stack ── */}
-        <section className="text-center pb-20">
-          <p className="text-xs uppercase tracking-widest mb-5 font-semibold" style={{ color: "var(--text-subtle)", letterSpacing: "0.12em" }}>
-            Powered by
-          </p>
-          <div className="flex flex-wrap justify-center gap-2.5">
-            {stack.map(t => (
-              <span key={t} className="rounded-full px-4 py-1.5 text-xs font-medium"
-                style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-muted)", fontFamily: "JetBrains Mono, monospace" }}>
-                {t}
-              </span>
-            ))}
-          </div>
-        </section>
-
-        {/* ── Bottom CTA ── */}
-        <section className="text-center pb-24">
-          <div className="rounded-3xl p-12"
-            style={{
-              background: "linear-gradient(135deg, rgba(34,197,94,0.08) 0%, rgba(34,197,94,0.03) 100%)",
-              border: "1px solid var(--accent-border)",
-              boxShadow: "0 0 60px rgba(34,197,94,0.06)",
-            }}>
-            <h2 className="text-3xl font-extrabold mb-3" style={{ fontFamily: "JetBrains Mono, monospace", letterSpacing: "-0.5px" }}>
-              Ready to remember everything?
-            </h2>
-            <p className="mb-8 text-sm" style={{ color: "var(--text-muted)" }}>Sign up in seconds. No credit card.</p>
-            <button
-              onClick={onGetStarted}
-              className="inline-flex items-center gap-2 px-8 py-3.5 rounded-2xl text-sm font-bold cursor-pointer"
-              style={{
-                background: "linear-gradient(135deg, #22C55E, #4ADE80)",
-                color: "#000",
-                fontFamily: "JetBrains Mono, monospace",
-                boxShadow: "0 0 24px rgba(34,197,94,0.35)",
-              }}>
-              Start chatting
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg>
-            </button>
-          </div>
-        </section>
-      </div>
-    </main>
-  );
 }
 
 // ─── Pending Approval Page ────────────────────────────────────────────────────
@@ -385,11 +200,12 @@ function AuthPage({ onAuthed, onPending }: { onAuthed: () => void; onPending: (e
         </div>
 
         {/* Card */}
+        <form onSubmit={submit}>
         <div className="rounded-2xl p-7 space-y-4"
           style={{ background: "var(--surface)", border: "1px solid var(--border-strong)", boxShadow: "var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,0.04)" }}>
           <div className="flex rounded-xl p-1 gap-1 mb-5" style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}>
             {(["login", "signup"] as const).map(m => (
-              <button key={m} onClick={() => setMode(m)}
+              <button type="button" key={m} onClick={() => setMode(m)}
                 className="flex-1 py-2 rounded-lg text-xs font-semibold cursor-pointer mode-btn"
                 style={{
                   background: mode === m ? "var(--accent)" : "transparent",
@@ -423,6 +239,7 @@ function AuthPage({ onAuthed, onPending }: { onAuthed: () => void; onPending: (e
           )}
 
           <button
+            type="submit"
             disabled={busy}
             className="w-full rounded-xl py-3 text-sm font-semibold cursor-pointer send-btn relative overflow-hidden"
             style={{
@@ -435,6 +252,7 @@ function AuthPage({ onAuthed, onPending }: { onAuthed: () => void; onPending: (e
               : mode === "login" ? "Sign in" : "Create account"}
           </button>
         </div>
+        </form>
       </div>
     </main>
   );
@@ -1129,7 +947,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
       await streamSpeech(text.slice(0, 1800), (floats, sr) => {
         if (!audioCtxRef.current || audioCtxRef.current.state === "closed") return;
         const buf = ctx!.createBuffer(1, floats.length, sr);
-        buf.copyToChannel(floats, 0);
+        buf.copyToChannel(new Float32Array(floats), 0);
         const src = ctx!.createBufferSource();
         src.buffer = buf;
         src.connect(ctx!.destination);
