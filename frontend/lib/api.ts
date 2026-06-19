@@ -262,6 +262,40 @@ export async function askStream(
   }
 }
 
+export async function transcribeAudio(blob: Blob): Promise<{ text: string }> {
+  const doFetch = () =>
+    fetch(`${API}/stt`, {
+      method: "POST",
+      headers: {
+        "Content-Type": blob.type || "audio/webm",
+        Authorization: `Bearer ${getToken()}`,
+      },
+      body: blob,
+    });
+  const res = await doFetch();
+  return json<{ text: string }>(res, doFetch);
+}
+
+export async function synthesizeSpeech(text: string): Promise<{ buffer: ArrayBuffer; contentType: string }> {
+  const doFetch = () =>
+    fetch(`${API}/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ text }),
+    });
+  const res = await doFetch();
+  if (res.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      const retried = await doFetch();
+      if (retried.ok) return { buffer: await retried.arrayBuffer(), contentType: retried.headers.get("content-type") || "audio/mpeg" };
+    }
+    clearToken(); window.location.href = "/"; throw new Error("Session expired");
+  }
+  if (!res.ok) throw new Error(`TTS failed (${res.status})`);
+  return { buffer: await res.arrayBuffer(), contentType: res.headers.get("content-type") || "audio/mpeg" };
+}
+
 export async function generateTitle(question: string, answer: string): Promise<string> {
   const doFetch = () =>
     fetch(`${API}/chat/title`, {

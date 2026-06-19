@@ -6,7 +6,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   askStream, clearMemories, clearToken, deleteDoc, extractText,
-  generateTitle, getMemories, getToken, getUserId, ingestUrl, login, saveToken, signup, uploadDoc,
+  generateTitle, getMemories, getToken, getUserId, ingestUrl, login, saveToken, signup,
+  synthesizeSpeech, transcribeAudio, uploadDoc,
   type AmbientPayload, type ChatMode, type Citation, type HistoryMessage,
 } from "@/lib/api";
 
@@ -245,6 +246,13 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   const [memBusy, setMemBusy] = useState(false);
   const [memRefreshing, setMemRefreshing] = useState(false);
   const [ambientGeo, setAmbientGeo] = useState<{ lat?: number; lon?: number; city?: string; country?: string } | null>(null);
+  const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    const v = localStorage.getItem("rag.tts");
+    return v === null ? true : v === "1";
+  });
+
+  useEffect(() => { localStorage.setItem("rag.tts", ttsEnabled ? "1" : "0"); }, [ttsEnabled]);
 
   useEffect(() => {
     if (!navigator.geolocation) { setAmbientGeo({}); return; }
@@ -535,6 +543,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
         <ChatArea key={activeSession.id} session={activeSession}
           onSessionUpdate={handleSessionUpdate} docFilter={docFilter}
           filteredDocNames={filteredDocNames} ambientGeo={ambientGeo}
+          ttsEnabled={ttsEnabled} onToggleTts={() => setTtsEnabled(v => !v)}
           onNewSession={createNewSession} />
       )}
 
@@ -663,10 +672,11 @@ function DocItem({ doc, selected, onRemove, onToggle }: {
 
 // ─── Chat Area ────────────────────────────────────────────────────────────────
 
-function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambientGeo, onNewSession }: {
+function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambientGeo, ttsEnabled, onToggleTts, onNewSession }: {
   session: Session; onSessionUpdate: (s: Session) => void;
   docFilter: string[] | null; filteredDocNames: string[] | null;
   ambientGeo: { lat?: number; lon?: number; city?: string; country?: string } | null;
+  ttsEnabled: boolean; onToggleTts: () => void;
   onNewSession: (mode: ChatMode) => void;
 }) {
   const [messages, setMessages] = useState<Msg[]>(session.messages);
@@ -676,10 +686,16 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
   const [attach, setAttach] = useState<{ text: string; name: string } | null>(null);
   const [attachImage, setAttachImage] = useState<{ data: string; mime: string; name: string } | null>(null);
   const [attachBusy, setAttachBusy] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [sttBusy, setSttBusy] = useState(false);
+  const [ttsPlaying, setTtsPlaying] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sessionIdRef = useRef(session.id);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     if (session.id !== sessionIdRef.current) {
@@ -726,6 +742,51 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
   function autoResizeTextarea() {
     const t = textareaRef.current;
     if (t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 140) + "px"; }
+  }
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4";
+      const mr = new MediaRecorder(stream, { mimeType });
+      audioChunksRef.current = [];
+      mr.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        setSttBusy(true);
+        try {
+          const blob = new Blob(audioChunksRef.current, { type: mimeType });
+          const { text } = await transcribeAudio(blob);
+          if (text.trim()) { setInput(text.trim()); setTimeout(() => textareaRef.current?.focus(), 50); }
+        } catch { /* STT failed silently */ }
+        finally { setSttBusy(false); }
+      };
+      mr.start();
+      mediaRecorderRef.current = mr;
+      setRecording(true);
+    } catch { /* microphone denied */ }
+  }
+
+  function stopRecording() {
+    mediaRecorderRef.current?.stop();
+    mediaRecorderRef.current = null;
+    setRecording(false);
+  }
+
+  async function playTts(text: string) {
+    if (!ttsEnabled || !text.trim()) return;
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+    setTtsPlaying(true);
+    try {
+      const { buffer, contentType } = await synthesizeSpeech(text.slice(0, 600));
+      const blob = new Blob([buffer], { type: contentType });
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => { URL.revokeObjectURL(url); setTtsPlaying(false); audioRef.current = null; };
+      audio.onerror = () => { URL.revokeObjectURL(url); setTtsPlaying(false); audioRef.current = null; };
+      await audio.play();
+    } catch { setTtsPlaying(false); }
   }
 
   async function doSend(
@@ -786,6 +847,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
             try { title = await generateTitle(q, accText.slice(0, 300)); } catch { title = q.slice(0, 48); }
           }
           onSessionUpdate({ ...session, title, messages: finalMsgs, updatedAt: Date.now() });
+          playTts(accText);
           setBusy(false);
         },
         history,
@@ -960,6 +1022,44 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
               onChange={e => { setInput(e.target.value); autoResizeTextarea(); }}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e as any); } }}
             />
+            {/* Mic button */}
+            <button type="button"
+              disabled={busy || sttBusy || attachBusy}
+              onClick={recording ? stopRecording : startRecording}
+              title={recording ? "Stop recording" : "Voice input"}
+              className="shrink-0 rounded-lg w-7 h-7 flex items-center justify-center cursor-pointer btn-icon"
+              style={{
+                color: recording ? "#F87171" : sttBusy ? "var(--accent)" : "var(--text-muted)",
+                background: recording ? "rgba(248,113,113,0.12)" : "transparent",
+                border: `1px solid ${recording ? "rgba(248,113,113,0.3)" : "transparent"}`,
+                animation: recording ? "pulse 1.2s ease-in-out infinite" : "none",
+                transition: "all 150ms",
+              }}>
+              {sttBusy
+                ? <Spinner size={11} color="currentColor" />
+                : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="9" y="2" width="6" height="11" rx="3"/>
+                    <path d="M19 10a7 7 0 0 1-14 0"/>
+                    <line x1="12" y1="19" x2="12" y2="22"/>
+                    <line x1="9" y1="22" x2="15" y2="22"/>
+                  </svg>}
+            </button>
+            {/* TTS toggle */}
+            <button type="button"
+              onClick={e => { e.preventDefault(); onToggleTts(); if (ttsPlaying && audioRef.current) { audioRef.current.pause(); audioRef.current = null; setTtsPlaying(false); } }}
+              title={ttsEnabled ? "Voice on — click to mute" : "Voice off — click to enable"}
+              className="shrink-0 rounded-lg w-7 h-7 flex items-center justify-center cursor-pointer btn-icon"
+              style={{
+                color: ttsEnabled ? (ttsPlaying ? "var(--accent)" : "var(--text-muted)") : "var(--text-subtle)",
+                opacity: ttsEnabled ? 1 : 0.4,
+                border: "1px solid transparent",
+                transition: "all 150ms",
+              }}>
+              {ttsEnabled
+                ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>}
+            </button>
+            {/* Send button */}
             <button type="submit" disabled={busy || !input.trim()}
               className="shrink-0 rounded-xl w-9 h-9 flex items-center justify-center cursor-pointer send-btn"
               style={{
