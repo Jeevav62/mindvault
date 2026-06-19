@@ -18,6 +18,8 @@ def get_driver() -> AsyncDriver:
         _driver = AsyncGraphDatabase.driver(
             s.neo4j_uri,
             auth=(s.neo4j_username, s.neo4j_password),
+            max_connection_lifetime=240,  # recycle every 4 min (before AuraDB idle timeout)
+            connection_timeout=10.0,
         )
         logger.info("Neo4j driver created → %s", s.neo4j_uri)
     return _driver
