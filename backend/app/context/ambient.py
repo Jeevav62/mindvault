@@ -16,12 +16,11 @@ async def build_ambient_context(
 ) -> str:
     parts: list[str] = []
 
-    # Time / date
-    try:
-        dt = datetime.fromisoformat(timestamp) if timestamp else datetime.now(timezone.utc)
-    except Exception:
-        dt = datetime.now(timezone.utc)
-    parts.append(dt.strftime("%I:%M %p, %A %B %d %Y").lstrip("0"))
+    # Time / date — frontend sends pre-formatted local time string, use as-is
+    if timestamp:
+        parts.append(timestamp)
+    else:
+        parts.append(datetime.now(timezone.utc).strftime("%I:%M %p UTC, %A %B %d %Y").lstrip("0"))
 
     # Location
     loc = ", ".join(filter(None, [city, country]))

@@ -243,11 +243,10 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   const [memories, setMemories] = useState<{ id: string; memory: string }[]>([]);
   const [memBusy, setMemBusy] = useState(false);
   const [memRefreshing, setMemRefreshing] = useState(false);
-  const [ambientPayload, setAmbientPayload] = useState<AmbientPayload | null>(null);
+  const [ambientGeo, setAmbientGeo] = useState<{ lat?: number; lon?: number; city?: string; country?: string } | null>(null);
 
   useEffect(() => {
-    const ts = new Date().toISOString();
-    if (!navigator.geolocation) { setAmbientPayload({ timestamp: ts }); return; }
+    if (!navigator.geolocation) { setAmbientGeo({}); return; }
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const lat = pos.coords.latitude;
@@ -258,16 +257,16 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
             { headers: { "User-Agent": "rag-chat-personal/1.0" } }
           );
           const data = await r.json();
-          setAmbientPayload({
-            lat, lon, timestamp: ts,
+          setAmbientGeo({
+            lat, lon,
             city: data.address?.city || data.address?.town || data.address?.village || undefined,
             country: data.address?.country || undefined,
           });
         } catch {
-          setAmbientPayload({ lat, lon, timestamp: ts });
+          setAmbientGeo({ lat, lon });
         }
       },
-      () => setAmbientPayload({ timestamp: ts }),
+      () => setAmbientGeo({}),
       { timeout: 5000 },
     );
   }, []);
@@ -521,7 +520,7 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
       {activeSession && (
         <ChatArea key={activeSession.id} session={activeSession}
           onSessionUpdate={handleSessionUpdate} docFilter={docFilter}
-          filteredDocNames={filteredDocNames} ambientPayload={ambientPayload}
+          filteredDocNames={filteredDocNames} ambientGeo={ambientGeo}
           onNewSession={createNewSession} />
       )}
 
@@ -650,10 +649,10 @@ function DocItem({ doc, selected, onRemove, onToggle }: {
 
 // ─── Chat Area ────────────────────────────────────────────────────────────────
 
-function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambientPayload, onNewSession }: {
+function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambientGeo, onNewSession }: {
   session: Session; onSessionUpdate: (s: Session) => void;
   docFilter: string[] | null; filteredDocNames: string[] | null;
-  ambientPayload: AmbientPayload | null;
+  ambientGeo: { lat?: number; lon?: number; city?: string; country?: string } | null;
   onNewSession: (mode: ChatMode) => void;
 }) {
   const [messages, setMessages] = useState<Msg[]>(session.messages);
@@ -780,7 +779,13 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
         pendingAttach?.name ?? null,
         pendingImage?.data ?? null,
         pendingImage?.mime ?? "image/jpeg",
-        ambientPayload,
+        ambientGeo !== null ? {
+          ...ambientGeo,
+          timestamp: new Date().toLocaleString("en-US", {
+            weekday: "long", month: "long", day: "numeric", year: "numeric",
+            hour: "numeric", minute: "2-digit", hour12: true, timeZoneName: "short",
+          }),
+        } : null,
       );
     } catch (err: any) {
       const errMsgs = [...baseMessages, mkError(err.message)];
