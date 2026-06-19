@@ -12,7 +12,7 @@ from app.auth.dependencies import get_current_user
 from app.auth.repository import UserRecord
 from app.providers.base import ProviderError
 
-from .service import answer_question, answer_question_stream
+from .service import answer_question, answer_question_stream, generate_title
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -117,3 +117,17 @@ async def chat_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+class TitleRequest(BaseModel):
+    question: str = Field(max_length=500)
+    answer: str = Field(max_length=1000)
+
+
+@router.post("/title")
+async def get_title(
+    body: TitleRequest,
+    user: UserRecord = Depends(get_current_user),
+) -> dict:
+    title = await generate_title(body.question, body.answer)
+    return {"title": title}

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from app import memory
 from app.providers import get_embedding_router, get_llm_router
+from app.providers.base import ChatMessage
 from app.providers.factory import get_vision_provider
 from app.vectorstore import Hit, search
 
@@ -129,11 +130,13 @@ async def answer_question_stream(
     full_text: list[str] = []
 
     if image_data:
-        # Vision models don't stream well; complete() then emit as single token
         vision = get_vision_provider()
         text = await vision.complete(messages, max_tokens=2048)
-        yield {"type": "token", "content": text}
         full_text.append(text)
+        # Fake-stream in ~8-char chunks for progressive rendering
+        for i in range(0, len(text), 8):
+            yield {"type": "token", "content": text[i:i + 8]}
+            await asyncio.sleep(0.01)
     else:
         llm_router = get_llm_router()
         async for token in llm_router.run_stream(lambda p: p.complete_stream(messages)):
@@ -150,3 +153,26 @@ async def _remember(user_id: str, question: str, answer: str) -> None:
         await memory.add_turn(user_id, question, answer)
     except Exception:
         logger.exception("memory write failed")
+
+
+async def generate_title(question: str, answer: str) -> str:
+    """Generate a short session title from first Q+A turn."""
+    llm_router = get_llm_router()
+    msgs = [
+        ChatMessage(
+            role="system",
+            content=(
+                "Generate a concise chat title (3-5 words, no quotes, no punctuation) "
+                "that captures what this conversation is about."
+            ),
+        ),
+        ChatMessage(
+            role="user",
+            content=f"User asked: {question[:200]}\nAssistant replied: {answer[:300]}",
+        ),
+    ]
+    try:
+        title = await llm_router.run(lambda p: p.complete(msgs))
+        return title.strip().strip('"').strip("'")[:60]
+    except Exception:
+        return question[:48]
