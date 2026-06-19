@@ -4,11 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import Landing from "./components/Landing";
 import {
-  askStream, clearMemories, clearToken, deleteDoc, deleteMemory, extractText,
-  generateTitle, getMemories, getToken, getUserId, getSttWsUrl, ingestUrl, login,
-  saveToken, signup, streamSpeech, transcribeAudio, uploadDoc,
+  approveUser, askStream, clearMemories, clearToken, deleteDoc, deleteMemory, extractText,
+  generateTitle, getMemories, getPendingUsers, getToken, getUserId, getSttWsUrl, getUsage,
+  ingestUrl, login, rejectUser, saveRefreshToken, saveToken, signup, streamSpeech,
+  transcribeAudio, uploadDoc,
   type AmbientPayload, type ChatMode, type Citation, type HistoryMessage,
+  type PendingUser, type UsageData,
 } from "@/lib/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -43,7 +46,7 @@ function loadSessions(uid: string): Session[] {
   try {
     const r = localStorage.getItem(`rag.sessions.${uid}`);
     const sessions = r ? JSON.parse(r) : [];
-    return sessions.map((s: Session) => ({ docs: [], ...s }));
+    return sessions.map((s: Session) => ({ ...s, docs: s.docs ?? [] }));
   } catch { return []; }
 }
 function saveSessions(uid: string, s: Session[]) { localStorage.setItem(`rag.sessions.${uid}`, JSON.stringify(s)); }
@@ -70,14 +73,63 @@ function groupByDate(sessions: Session[]) {
 
 export default function Home() {
   const [authed, setAuthed] = useState(typeof window !== "undefined" && !!getToken());
-  return authed
-    ? <AppLayout onLogout={() => setAuthed(false)} />
-    : <AuthPage onAuthed={() => setAuthed(true)} />;
+  const [showLanding, setShowLanding] = useState(!authed);
+  const [pendingEmail, setPendingEmail] = useState<string | null>(null);
+
+  if (authed) return <AppLayout onLogout={() => { setAuthed(false); setShowLanding(true); }} />;
+  if (pendingEmail) return <PendingApprovalPage email={pendingEmail} onBack={() => setPendingEmail(null)} />;
+  if (showLanding) return <Landing onGetStarted={() => setShowLanding(false)} />;
+  return <AuthPage onAuthed={() => setAuthed(true)} onPending={(email) => setPendingEmail(email)} />;
+}
+
+// ─── Pending Approval Page ────────────────────────────────────────────────────
+
+function PendingApprovalPage({ email, onBack }: { email: string; onBack: () => void }) {
+  return (
+    <main className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden"
+      style={{ background: "var(--bg-solid)" }}>
+      <div className="absolute inset-0 pointer-events-none overflow-hidden">
+        <div style={{ position: "absolute", width: 500, height: 500, borderRadius: "50%", background: "radial-gradient(circle, rgba(245,158,11,0.06) 0%, transparent 70%)", top: "-100px", left: "-100px", animation: "orbitA 18s ease-in-out infinite" }} />
+        <div style={{ position: "absolute", width: 400, height: 400, borderRadius: "50%", background: "radial-gradient(circle, rgba(34,197,94,0.05) 0%, transparent 70%)", bottom: "-80px", right: "5%", animation: "orbitB 22s ease-in-out infinite" }} />
+      </div>
+      <div className="w-full max-w-sm relative z-10 text-center anim-fade-up">
+        <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6"
+          style={{ background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.3)", boxShadow: "0 0 32px rgba(245,158,11,0.12)" }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#F59E0B" strokeWidth="1.5">
+            <circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/>
+            <path d="M18 8h2m-1-1v2" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <h2 className="text-xl font-bold mb-2" style={{ fontFamily: "JetBrains Mono, monospace" }}>
+          Awaiting approval
+        </h2>
+        <p className="text-sm leading-relaxed mb-1" style={{ color: "var(--text-muted)" }}>
+          Your account <span style={{ color: "var(--text)", fontFamily: "JetBrains Mono, monospace" }}>{email}</span> has been created.
+        </p>
+        <p className="text-sm leading-relaxed mb-8" style={{ color: "var(--text-muted)" }}>
+          Access is by invite only. The admin will review and approve your account shortly.
+        </p>
+        <div className="rounded-2xl p-4 mb-6 text-left"
+          style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.2)" }}>
+          <p className="text-xs" style={{ color: "#F59E0B" }}>
+            Once approved, return here and sign in with your credentials.
+          </p>
+        </div>
+        <button onClick={onBack}
+          className="text-sm cursor-pointer"
+          style={{ color: "var(--text-muted)", fontFamily: "JetBrains Mono, monospace" }}
+          onMouseOver={e => ((e.currentTarget as HTMLElement).style.color = "var(--accent)")}
+          onMouseOut={e => ((e.currentTarget as HTMLElement).style.color = "var(--text-muted)")}>
+          ← Back to sign in
+        </button>
+      </div>
+    </main>
+  );
 }
 
 // ─── Auth Page ────────────────────────────────────────────────────────────────
 
-function AuthPage({ onAuthed }: { onAuthed: () => void }) {
+function AuthPage({ onAuthed, onPending }: { onAuthed: () => void; onPending: (email: string) => void }) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -89,8 +141,15 @@ function AuthPage({ onAuthed }: { onAuthed: () => void }) {
     try {
       const t = await (mode === "login" ? login : signup)(email, password);
       saveToken(t.access_token);
+      saveRefreshToken(t.refresh_token);
       onAuthed();
-    } catch (err: any) { setError(err.message); }
+    } catch (err: any) {
+      if (err.message === "pending_approval") {
+        onPending(email);
+      } else {
+        setError(err.message);
+      }
+    }
     finally { setBusy(false); }
   }
 
@@ -141,11 +200,12 @@ function AuthPage({ onAuthed }: { onAuthed: () => void }) {
         </div>
 
         {/* Card */}
+        <form onSubmit={submit}>
         <div className="rounded-2xl p-7 space-y-4"
           style={{ background: "var(--surface)", border: "1px solid var(--border-strong)", boxShadow: "var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,0.04)" }}>
           <div className="flex rounded-xl p-1 gap-1 mb-5" style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}>
             {(["login", "signup"] as const).map(m => (
-              <button key={m} onClick={() => setMode(m)}
+              <button type="button" key={m} onClick={() => setMode(m)}
                 className="flex-1 py-2 rounded-lg text-xs font-semibold cursor-pointer mode-btn"
                 style={{
                   background: mode === m ? "var(--accent)" : "transparent",
@@ -179,6 +239,7 @@ function AuthPage({ onAuthed }: { onAuthed: () => void }) {
           )}
 
           <button
+            type="submit"
             disabled={busy}
             className="w-full rounded-xl py-3 text-sm font-semibold cursor-pointer send-btn relative overflow-hidden"
             style={{
@@ -191,6 +252,7 @@ function AuthPage({ onAuthed }: { onAuthed: () => void }) {
               : mode === "login" ? "Sign in" : "Create account"}
           </button>
         </div>
+        </form>
       </div>
     </main>
   );
@@ -245,6 +307,20 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   const [memories, setMemories] = useState<{ id: string; memory: string }[]>([]);
   const [memBusy, setMemBusy] = useState(false);
   const [memRefreshing, setMemRefreshing] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [usageData, setUsageData] = useState<UsageData | null>(null);
+  const [statsBusy, setStatsBusy] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([]);
+  const [adminBusy, setAdminBusy] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    // Detect admin by trying to fetch pending users — 403 = not admin, 200 = admin
+    getPendingUsers()
+      .then(users => { setIsAdmin(true); setPendingUsers(users); })
+      .catch(() => setIsAdmin(false));
+  }, []);
   const [ambientGeo, setAmbientGeo] = useState<{ lat?: number; lon?: number; city?: string; country?: string } | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
@@ -357,6 +433,20 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     ));
     setSelectedDocIds(s => { const n = new Set(s); n.delete(docId); return n; });
     try { await deleteDoc(docId); } catch {}
+  }
+
+  async function openAdmin() {
+    setAdminOpen(true);
+    setAdminBusy(true);
+    try { setPendingUsers(await getPendingUsers()); } catch {}
+    finally { setAdminBusy(false); }
+  }
+
+  async function openStats() {
+    setStatsOpen(true);
+    setStatsBusy(true);
+    try { const r = await getUsage(); setUsageData(r.usage); } catch {}
+    finally { setStatsBusy(false); }
   }
 
   async function openMemory() {
@@ -510,6 +600,16 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
               action: openMemory,
             },
             {
+              icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>,
+              label: "Provider Stats",
+              action: openStats,
+            },
+            ...(isAdmin ? [{
+              icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+              label: `Approvals${pendingUsers.length > 0 ? ` (${pendingUsers.length})` : ""}`,
+              action: openAdmin,
+            }] : []),
+            {
               icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
               label: "Logout",
               action: () => { clearToken(); onLogout(); },
@@ -555,6 +655,24 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
             try { await deleteMemory(id); setMemories(m => m.filter(x => x.id !== id)); } catch {}
           }}
           onClear={async () => { try { await clearMemories(); setMemories([]); } catch {} }} />
+      )}
+      {statsOpen && (
+        <StatsDrawer usage={usageData} busy={statsBusy} onClose={() => setStatsOpen(false)} />
+      )}
+      {adminOpen && (
+        <AdminDrawer
+          users={pendingUsers}
+          busy={adminBusy}
+          onClose={() => setAdminOpen(false)}
+          onApprove={async (id) => {
+            await approveUser(id);
+            setPendingUsers(u => u.filter(x => x.id !== id));
+          }}
+          onReject={async (id) => {
+            await rejectUser(id);
+            setPendingUsers(u => u.filter(x => x.id !== id));
+          }}
+        />
       )}
     </div>
   );
@@ -829,7 +947,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
       await streamSpeech(text.slice(0, 1800), (floats, sr) => {
         if (!audioCtxRef.current || audioCtxRef.current.state === "closed") return;
         const buf = ctx!.createBuffer(1, floats.length, sr);
-        buf.copyToChannel(floats, 0);
+        buf.copyToChannel(new Float32Array(floats), 0);
         const src = ctx!.createBufferSource();
         src.buffer = buf;
         src.connect(ctx!.destination);
@@ -1404,6 +1522,261 @@ function MemoryItem({ item, onDelete }: { item: { id: string; memory: string }; 
     </li>
   );
 }
+
+// ─── Admin Drawer ─────────────────────────────────────────────────────────────
+
+function AdminDrawer({ users, busy, onClose, onApprove, onReject }: {
+  users: PendingUser[];
+  busy: boolean;
+  onClose: () => void;
+  onApprove: (id: string) => Promise<void>;
+  onReject: (id: string) => Promise<void>;
+}) {
+  const [acting, setActing] = useState<Record<string, "approving" | "rejecting">>({});
+
+  async function act(id: string, type: "approving" | "rejecting") {
+    setActing(a => ({ ...a, [id]: type }));
+    try { await (type === "approving" ? onApprove : onReject)(id); }
+    finally { setActing(a => { const n = { ...a }; delete n[id]; return n; }); }
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)" }} onClick={onClose} />
+      <aside className="fixed right-0 top-0 h-full z-50 flex flex-col w-[420px] anim-drawer"
+        style={{ background: "var(--surface)", borderLeft: "1px solid var(--border-strong)", boxShadow: "-12px 0 48px rgba(0,0,0,0.4)" }}>
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
+          <div>
+            <h3 className="text-sm font-semibold">Access Approvals</h3>
+            <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+              {users.length} {users.length === 1 ? "user" : "users"} pending
+            </p>
+          </div>
+          <button onClick={onClose}
+            className="w-7 h-7 rounded-xl flex items-center justify-center cursor-pointer btn-icon"
+            style={{ color: "var(--text-muted)", border: "1px solid var(--border)", background: "var(--surface-2)" }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5">
+          {busy ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-16">
+              <Spinner size={24} color="var(--accent)" />
+              <p className="text-xs" style={{ color: "var(--text-muted)" }}>Loading…</p>
+            </div>
+          ) : users.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+              <div className="w-12 h-12 rounded-2xl flex items-center justify-center"
+                style={{ background: "var(--accent-dim)", border: "1px solid var(--accent-border)" }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22,4 12,14.01 9,11.01"/></svg>
+              </div>
+              <p className="text-sm font-medium" style={{ color: "var(--text)" }}>All caught up!</p>
+              <p className="text-xs" style={{ color: "var(--text-muted)" }}>No pending approval requests.</p>
+            </div>
+          ) : (
+            <ul className="space-y-3">
+              {users.map(u => (
+                <li key={u.id} className="rounded-2xl p-4"
+                  style={{ background: "var(--surface-2)", border: "1px solid var(--border-strong)" }}>
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold"
+                      style={{ background: "rgba(245,158,11,0.12)", color: "#F59E0B", border: "1px solid rgba(245,158,11,0.25)", fontFamily: "JetBrains Mono, monospace" }}>
+                      {u.email[0].toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium truncate" style={{ color: "var(--text)", fontFamily: "JetBrains Mono, monospace" }}>{u.email}</p>
+                      <p className="text-xs mt-0.5" style={{ color: "#F59E0B" }}>Pending approval</p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      disabled={!!acting[u.id]}
+                      onClick={() => act(u.id, "approving")}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold cursor-pointer"
+                      style={{
+                        background: acting[u.id] === "approving" ? "var(--accent-dim)" : "linear-gradient(135deg, #22C55E, #4ADE80)",
+                        color: acting[u.id] === "approving" ? "var(--accent)" : "#000",
+                        fontFamily: "JetBrains Mono, monospace",
+                        opacity: acting[u.id] === "rejecting" ? 0.5 : 1,
+                        transition: "all 150ms",
+                      }}>
+                      {acting[u.id] === "approving" ? <Spinner size={11} color="currentColor" /> : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20,6 9,17 4,12"/></svg>}
+                      Approve
+                    </button>
+                    <button
+                      disabled={!!acting[u.id]}
+                      onClick={() => act(u.id, "rejecting")}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold cursor-pointer"
+                      style={{
+                        background: "rgba(248,113,113,0.08)",
+                        color: "#F87171",
+                        border: "1px solid rgba(248,113,113,0.25)",
+                        fontFamily: "JetBrains Mono, monospace",
+                        opacity: acting[u.id] === "approving" ? 0.5 : 1,
+                        transition: "all 150ms",
+                      }}>
+                      {acting[u.id] === "rejecting" ? <Spinner size={11} color="currentColor" /> : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>}
+                      Reject
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </aside>
+    </>
+  );
+}
+
+// ─── Stats Drawer ─────────────────────────────────────────────────────────────
+
+const KIND_LABELS: Record<string, string> = {
+  llm: "LLM",
+  embedding: "Embeddings",
+  stt: "Speech → Text",
+  tts: "Text → Speech",
+  search: "Web Search",
+};
+const KIND_COLORS: Record<string, string> = {
+  llm: "#22C55E",
+  embedding: "#818CF8",
+  stt: "#F59E0B",
+  tts: "#38BDF8",
+  search: "#F472B6",
+};
+
+function StatsDrawer({ usage, busy, onClose }: { usage: UsageData | null; busy: boolean; onClose: () => void }) {
+  const kinds = usage ? Object.keys(usage) : [];
+  const totalRequests = usage
+    ? Object.values(usage).flatMap(providers => Object.values(providers)).reduce((s, v) => s + v.ok, 0)
+    : 0;
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)" }} onClick={onClose} />
+      <aside className="fixed right-0 top-0 h-full z-50 flex flex-col w-[420px] anim-drawer"
+        style={{ background: "var(--surface)", borderLeft: "1px solid var(--border-strong)", boxShadow: "-12px 0 48px rgba(0,0,0,0.4)" }}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
+          <div>
+            <h3 className="text-sm font-semibold">Provider Stats</h3>
+            <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+              {totalRequests} total requests this session
+            </p>
+          </div>
+          <button onClick={onClose}
+            className="w-7 h-7 rounded-xl flex items-center justify-center cursor-pointer btn-icon"
+            style={{ color: "var(--text-muted)", border: "1px solid var(--border)", background: "var(--surface-2)" }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          {busy ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-16">
+              <Spinner size={24} color="var(--accent)" />
+              <p className="text-xs" style={{ color: "var(--text-muted)" }}>Loading stats…</p>
+            </div>
+          ) : kinds.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+              <div className="w-12 h-12 rounded-2xl flex items-center justify-center"
+                style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-subtle)" strokeWidth="1.5"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+              </div>
+              <p className="text-sm" style={{ color: "var(--text-muted)" }}>No stats yet</p>
+              <p className="text-xs max-w-[200px]" style={{ color: "var(--text-subtle)" }}>
+                Send a few messages to see provider usage.
+              </p>
+            </div>
+          ) : (
+            kinds.map(kind => {
+              const providers = usage![kind];
+              const color = KIND_COLORS[kind] ?? "#22C55E";
+              const kindTotal = Object.values(providers).reduce((s, v) => s + v.ok, 0);
+              return (
+                <div key={kind} className="rounded-2xl p-4" style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+                  {/* Kind header */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full" style={{ background: color }} />
+                      <span className="text-xs font-bold uppercase tracking-widest"
+                        style={{ color, fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.08em", fontSize: "10px" }}>
+                        {KIND_LABELS[kind] ?? kind}
+                      </span>
+                    </div>
+                    <span className="text-xs font-semibold" style={{ color: "var(--text-muted)", fontFamily: "JetBrains Mono, monospace" }}>
+                      {kindTotal} req
+                    </span>
+                  </div>
+
+                  {/* Providers */}
+                  <div className="space-y-3">
+                    {Object.entries(providers).map(([name, stat]) => {
+                      const total = stat.ok + stat.error;
+                      const successRate = total > 0 ? stat.ok / total : 0;
+                      const isFallback = stat.fallback > 0;
+                      return (
+                        <div key={name}>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-semibold" style={{ color: "var(--text)", fontFamily: "JetBrains Mono, monospace" }}>
+                                {name}
+                              </span>
+                              {isFallback && (
+                                <span className="text-xs rounded-full px-2 py-0.5"
+                                  style={{ background: "rgba(245,158,11,0.12)", color: "#F59E0B", border: "1px solid rgba(245,158,11,0.25)", fontSize: "9px", fontFamily: "JetBrains Mono, monospace" }}>
+                                  {stat.fallback} fallback
+                                </span>
+                              )}
+                              {stat.error > 0 && (
+                                <span className="text-xs rounded-full px-2 py-0.5"
+                                  style={{ background: "rgba(248,113,113,0.1)", color: "#F87171", border: "1px solid rgba(248,113,113,0.2)", fontSize: "9px", fontFamily: "JetBrains Mono, monospace" }}>
+                                  {stat.error} err
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-xs" style={{ color: "var(--text-muted)", fontFamily: "JetBrains Mono, monospace" }}>
+                              {stat.ok}/{total}
+                            </span>
+                          </div>
+                          {/* Progress bar */}
+                          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-3, rgba(255,255,255,0.05))" }}>
+                            <div className="h-full rounded-full"
+                              style={{
+                                width: `${successRate * 100}%`,
+                                background: stat.error > 0
+                                  ? `linear-gradient(90deg, ${color}, #F87171)`
+                                  : color,
+                                transition: "width 600ms ease-out",
+                              }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Footer note */}
+        {!busy && kinds.length > 0 && (
+          <div className="px-5 py-4" style={{ borderTop: "1px solid var(--border)" }}>
+            <p className="text-xs" style={{ color: "var(--text-subtle)" }}>
+              Stats reset on server restart. Fallbacks trigger when primary provider hits rate limits.
+            </p>
+          </div>
+        )}
+      </aside>
+    </>
+  );
+}
+
+// ─── Memory Drawer ────────────────────────────────────────────────────────────
 
 function MemoryDrawer({ memories, busy, refreshing, onClose, onDelete, onClear }: {
   memories: { id: string; memory: string }[];

@@ -15,6 +15,7 @@ import logging
 from typing import AsyncIterator, Awaitable, Callable, Generic, TypeVar
 
 from .base import ProviderError
+from . import stats as _stats
 
 logger = logging.getLogger("providers.router")
 
@@ -46,15 +47,18 @@ class FallbackRouter(Generic[P]):
             try:
                 async for token in op(provider):
                     yield token
+                _stats.record(self.kind, name, fallback=bool(errors))
                 if errors:
                     logger.info("[%s] stream served by fallback '%s'", self.kind, name)
                 return
             except ProviderError as exc:
+                _stats.record(self.kind, name, error=True)
                 errors.append(f"{name}: {exc}")
                 if not exc.retryable:
                     raise
                 logger.warning("[%s] '%s' stream failed (%s), trying next", self.kind, name, exc)
             except Exception as exc:  # noqa: BLE001
+                _stats.record(self.kind, name, error=True)
                 errors.append(f"{name}: unexpected {exc!r}")
                 logger.warning("[%s] '%s' unexpected stream error, trying next", self.kind, name)
         raise AllProvidersFailed(f"all {self.kind} providers stream failed: {'; '.join(errors)}")
@@ -65,12 +69,14 @@ class FallbackRouter(Generic[P]):
             name = getattr(provider, "name", provider.__class__.__name__)
             try:
                 result = await op(provider)
-                if errors:  # we fell over at least once
+                _stats.record(self.kind, name, fallback=bool(errors))
+                if errors:
                     logger.info("[%s] served by fallback '%s'", self.kind, name)
                 else:
                     logger.debug("[%s] served by '%s'", self.kind, name)
                 return result
             except ProviderError as exc:
+                _stats.record(self.kind, name, error=True)
                 errors.append(f"{name}: {exc}")
                 if not exc.retryable:
                     logger.error("[%s] '%s' non-retryable: %s", self.kind, name, exc)
@@ -79,6 +85,7 @@ class FallbackRouter(Generic[P]):
                     "[%s] '%s' failed (%s), trying next provider", self.kind, name, exc
                 )
             except Exception as exc:  # noqa: BLE001 — unexpected, treat as retryable
+                _stats.record(self.kind, name, error=True)
                 errors.append(f"{name}: unexpected {exc!r}")
                 logger.warning(
                     "[%s] '%s' unexpected error (%r), trying next", self.kind, name, exc

@@ -17,7 +17,7 @@ from app.config import get_settings
 
 _ph = PasswordHasher()
 
-TokenType = Literal["access", "refresh"]
+TokenType = Literal["access", "refresh", "approval"]
 
 
 # ── Passwords ──────────────────────────────────────────────────────────────
@@ -66,6 +66,11 @@ def create_access_token(user_id: str, extra: dict | None = None) -> str:
 def create_refresh_token(user_id: str) -> str:
     s = get_settings()
     return _create_token(user_id, "refresh", timedelta(days=s.jwt_refresh_ttl_days))
+
+
+def create_approval_token(user_id: str) -> str:
+    """Short-lived token embedded in the approve-link email. Valid 48 hours."""
+    return _create_token(user_id, "approval", timedelta(hours=48))
 
 
 def decode_token(token: str, *, expected_type: TokenType) -> dict[str, Any]:

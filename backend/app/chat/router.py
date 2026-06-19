@@ -4,8 +4,9 @@ import json as _json
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from app.limiter import limiter
 from pydantic import BaseModel, Field
 
 from app.auth.dependencies import get_current_user
@@ -104,7 +105,9 @@ async def chat(
 
 
 @router.post("/stream")
+@limiter.limit("30/minute")
 async def chat_stream(
+    request: Request,
     body: ChatRequest,
     user: UserRecord = Depends(get_current_user),
 ):
