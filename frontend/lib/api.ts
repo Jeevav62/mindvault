@@ -363,6 +363,16 @@ export async function deleteMemory(id: string) {
   return json<void>(res, doFetch);
 }
 
+export type ProviderStat = { ok: number; fallback: number; error: number };
+export type UsageData = Record<string, Record<string, ProviderStat>>;
+
+export async function getUsage(): Promise<{ usage: UsageData }> {
+  const doFetch = () =>
+    fetch(`${API}/usage`, { headers: { Authorization: `Bearer ${getToken()}` } });
+  const res = await doFetch();
+  return json<{ usage: UsageData }>(res, doFetch);
+}
+
 export async function clearMemories() {
   const doFetch = () =>
     fetch(`${API}/memory`, {
