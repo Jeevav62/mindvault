@@ -809,6 +809,15 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
     const history: HistoryMessage[] = startingMessages.slice(-20).map(m => ({ role: m.role, content: m.text }));
     let accText = "";
     let accCitations: Citation[] = [];
+    let ttsFired = false;
+
+    function stripMd(t: string) { return t.replace(/```[\s\S]*?```|`[^`]+`|[*_#>\[\]]/g, " ").trim(); }
+    function maybeFireTts() {
+      if (ttsFired || !ttsEnabled) return;
+      const plain = stripMd(accText);
+      const m = plain.match(/^.{50,}?[.!?]/);
+      if (m) { ttsFired = true; playTts(m[0]); }
+    }
 
     const mkError = (msg: string): Msg => ({
       role: "assistant", text: `⚠ ${msg}`, mode: session.mode, isError: true, retryPayload,
@@ -831,6 +840,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
               return c;
             });
           });
+          maybeFireTts();
         },
         errMsg => {
           const errMsgs = [...baseMessages, mkError(errMsg)];
@@ -847,7 +857,7 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
             try { title = await generateTitle(q, accText.slice(0, 300)); } catch { title = q.slice(0, 48); }
           }
           onSessionUpdate({ ...session, title, messages: finalMsgs, updatedAt: Date.now() });
-          playTts(accText);
+          if (!ttsFired) playTts(stripMd(accText).slice(0, 200));
           setBusy(false);
         },
         history,
@@ -1027,17 +1037,21 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
               disabled={busy || sttBusy || attachBusy}
               onClick={recording ? stopRecording : startRecording}
               title={recording ? "Stop recording" : "Voice input"}
-              className="shrink-0 rounded-lg w-7 h-7 flex items-center justify-center cursor-pointer btn-icon"
+              className="shrink-0 rounded-xl flex items-center justify-center cursor-pointer"
               style={{
-                color: recording ? "#F87171" : sttBusy ? "var(--accent)" : "var(--text-muted)",
-                background: recording ? "rgba(248,113,113,0.12)" : "transparent",
-                border: `1px solid ${recording ? "rgba(248,113,113,0.3)" : "transparent"}`,
+                width: 32, height: 32,
+                color: recording ? "#fff" : sttBusy ? "var(--accent)" : "var(--text)",
+                background: recording
+                  ? "linear-gradient(135deg, #EF4444, #F87171)"
+                  : sttBusy ? "var(--accent-dim)" : "var(--surface-2)",
+                border: `1.5px solid ${recording ? "#EF4444" : "var(--border-strong)"}`,
+                boxShadow: recording ? "0 0 12px rgba(239,68,68,0.4)" : "none",
                 animation: recording ? "pulse 1.2s ease-in-out infinite" : "none",
                 transition: "all 150ms",
               }}>
               {sttBusy
-                ? <Spinner size={11} color="currentColor" />
-                : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                ? <Spinner size={13} color="currentColor" />
+                : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <rect x="9" y="2" width="6" height="11" rx="3"/>
                     <path d="M19 10a7 7 0 0 1-14 0"/>
                     <line x1="12" y1="19" x2="12" y2="22"/>
@@ -1047,17 +1061,22 @@ function ChatArea({ session, onSessionUpdate, docFilter, filteredDocNames, ambie
             {/* TTS toggle */}
             <button type="button"
               onClick={e => { e.preventDefault(); onToggleTts(); if (ttsPlaying && audioRef.current) { audioRef.current.pause(); audioRef.current = null; setTtsPlaying(false); } }}
-              title={ttsEnabled ? "Voice on — click to mute" : "Voice off — click to enable"}
-              className="shrink-0 rounded-lg w-7 h-7 flex items-center justify-center cursor-pointer btn-icon"
+              title={ttsEnabled ? (ttsPlaying ? "Speaking… click to stop" : "Voice on — click to mute") : "Voice off — click to enable"}
+              className="shrink-0 rounded-xl flex items-center justify-center cursor-pointer"
               style={{
-                color: ttsEnabled ? (ttsPlaying ? "var(--accent)" : "var(--text-muted)") : "var(--text-subtle)",
-                opacity: ttsEnabled ? 1 : 0.4,
-                border: "1px solid transparent",
+                width: 32, height: 32,
+                color: ttsPlaying ? "#fff" : ttsEnabled ? "var(--text)" : "var(--text-muted)",
+                background: ttsPlaying
+                  ? "linear-gradient(135deg, #22C55E, #4ADE80)"
+                  : ttsEnabled ? "var(--surface-2)" : "transparent",
+                border: `1.5px solid ${ttsEnabled ? "var(--border-strong)" : "var(--border)"}`,
+                boxShadow: ttsPlaying ? "0 0 10px rgba(34,197,94,0.35)" : "none",
+                opacity: ttsEnabled ? 1 : 0.5,
                 transition: "all 150ms",
               }}>
               {ttsEnabled
-                ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-                : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>}
+                ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>}
             </button>
             {/* Send button */}
             <button type="submit" disabled={busy || !input.trim()}
