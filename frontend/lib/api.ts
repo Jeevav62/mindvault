@@ -317,6 +317,17 @@ export async function getMemories() {
   return json<{ items: { id: string; memory: string }[] }>(res, doFetch);
 }
 
+export async function deleteMemory(id: string) {
+  const doFetch = () =>
+    fetch(`${API}/memory/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+  const res = await doFetch();
+  if (res.status === 204) return;
+  return json<void>(res, doFetch);
+}
+
 export async function clearMemories() {
   const doFetch = () =>
     fetch(`${API}/memory`, {

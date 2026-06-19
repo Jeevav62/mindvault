@@ -28,6 +28,14 @@ async def list_memories(user: UserRecord = Depends(get_current_user)) -> MemoryL
     )
 
 
+@router.delete("/{memory_id}", status_code=204)
+async def delete_memory(memory_id: str, user: UserRecord = Depends(get_current_user)) -> None:
+    deleted = await service.delete_one(user.id, memory_id)
+    if not deleted:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+
 @router.delete("", status_code=204)
 async def clear_memories(user: UserRecord = Depends(get_current_user)) -> None:
     await service.wipe(user.id)

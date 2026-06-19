@@ -5,7 +5,7 @@ import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  askStream, clearMemories, clearToken, deleteDoc, extractText,
+  askStream, clearMemories, clearToken, deleteDoc, deleteMemory, extractText,
   generateTitle, getMemories, getToken, getUserId, ingestUrl, login, saveToken, signup,
   synthesizeSpeech, transcribeAudio, uploadDoc,
   type AmbientPayload, type ChatMode, type Citation, type HistoryMessage,
@@ -551,6 +551,9 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
       {memoryOpen && (
         <MemoryDrawer memories={memories} busy={memBusy} refreshing={memRefreshing}
           onClose={() => setMemoryOpen(false)}
+          onDelete={async (id) => {
+            try { await deleteMemory(id); setMemories(m => m.filter(x => x.id !== id)); } catch {}
+          }}
           onClear={async () => { try { await clearMemories(); setMemories([]); } catch {} }} />
       )}
     </div>
@@ -1303,10 +1306,49 @@ function CitationDrawer({ citation, onClose }: { citation: Citation; onClose: ()
 
 // ─── Memory Drawer ────────────────────────────────────────────────────────────
 
-function MemoryDrawer({ memories, busy, refreshing, onClose, onClear }: {
+function MemoryItem({ item, onDelete }: { item: { id: string; memory: string }; onDelete: (id: string) => void }) {
+  const [hovered, setHovered] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  return (
+    <li
+      className="rounded-xl px-4 py-3 text-sm anim-fade-up flex items-start gap-2"
+      style={{
+        background: hovered ? "var(--surface-hover)" : "var(--surface-2)",
+        border: `1px solid ${hovered ? "var(--border-strong)" : "var(--border)"}`,
+        color: "var(--text)",
+        lineHeight: 1.65,
+        transition: "background 140ms, border-color 140ms",
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}>
+      <span className="shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full" style={{ background: "var(--accent)" }} />
+      <span className="flex-1">{item.memory}</span>
+      <button
+        onClick={async () => { setDeleting(true); await onDelete(item.id); }}
+        disabled={deleting}
+        title="Remove this memory"
+        className="shrink-0 w-5 h-5 rounded-md flex items-center justify-center cursor-pointer"
+        style={{
+          opacity: hovered ? 1 : 0,
+          color: "#F87171",
+          background: hovered ? "rgba(248,113,113,0.12)" : "transparent",
+          border: "1px solid transparent",
+          transition: "opacity 140ms, background 140ms",
+          pointerEvents: hovered ? "auto" : "none",
+          marginTop: "2px",
+        }}>
+        {deleting
+          ? <Spinner size={9} color="#F87171" />
+          : <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>}
+      </button>
+    </li>
+  );
+}
+
+function MemoryDrawer({ memories, busy, refreshing, onClose, onDelete, onClear }: {
   memories: { id: string; memory: string }[];
   busy: boolean; refreshing: boolean;
-  onClose: () => void; onClear: () => void;
+  onClose: () => void; onDelete: (id: string) => Promise<void>; onClear: () => void;
 }) {
   return (
     <>
@@ -1357,18 +1399,7 @@ function MemoryDrawer({ memories, busy, refreshing, onClose, onClear }: {
           ) : (
             <ul className="space-y-2">
               {memories.map((m, i) => (
-                <li key={m.id}
-                  className="rounded-xl px-4 py-3 text-sm anim-fade-up"
-                  style={{
-                    background: "var(--surface-2)",
-                    border: "1px solid var(--border)",
-                    color: "var(--text)",
-                    lineHeight: 1.65,
-                    animationDelay: `${i * 35}ms`,
-                  }}>
-                  <span className="inline-block w-1.5 h-1.5 rounded-full mr-2 align-middle" style={{ background: "var(--accent)", verticalAlign: "middle" }} />
-                  {m.memory}
-                </li>
+                <MemoryItem key={m.id} item={m} onDelete={onDelete} />
               ))}
             </ul>
           )}
