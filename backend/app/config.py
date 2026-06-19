@@ -99,6 +99,9 @@ class Settings(BaseSettings):
     # Ambient context
     openweathermap_api_key: str = ""
 
+    # Apify (URL crawling)
+    apify_api_key: str = ""
+
     @field_validator(
         "cors_origins",
         "vector_store_order",

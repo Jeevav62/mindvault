@@ -132,6 +132,17 @@ export async function uploadDoc(file: File) {
   return json<{ doc_id: string; filename: string; chunk_count: number }>(res, doFetch);
 }
 
+export async function ingestUrl(url: string) {
+  const doFetch = () =>
+    fetch(`${API}/ingest/url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ url }),
+    });
+  const res = await doFetch();
+  return json<{ doc_id: string; filename: string; chunk_count: number }>(res, doFetch);
+}
+
 export async function deleteDoc(docId: string) {
   const doFetch = () =>
     fetch(`${API}/ingest/${encodeURIComponent(docId)}`, {

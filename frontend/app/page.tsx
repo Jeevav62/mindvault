@@ -6,7 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   askStream, clearMemories, clearToken, deleteDoc, extractText,
-  generateTitle, getMemories, getToken, getUserId, login, saveToken, signup, uploadDoc,
+  generateTitle, getMemories, getToken, getUserId, ingestUrl, login, saveToken, signup, uploadDoc,
   type AmbientPayload, type ChatMode, type Citation, type HistoryMessage,
 } from "@/lib/api";
 
@@ -235,6 +235,8 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
   });
   const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [urlInput, setUrlInput] = useState("");
+  const [urlBusy, setUrlBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [docsExpanded, setDocsExpanded] = useState(true);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -304,6 +306,24 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [activeSession?.mode]);
+
+  async function handleIngestUrl() {
+    const url = urlInput.trim();
+    if (!url || urlBusy) return;
+    setUrlInput("");
+    setUrlBusy(true);
+    setUploadStatus("Fetching page via Apify…");
+    try {
+      const r = await ingestUrl(url);
+      setDocs(d => [...d, { filename: r.filename, chunk_count: r.chunk_count, doc_id: r.doc_id }]);
+      setUploadStatus(`✓ ${r.filename} — ${r.chunk_count} chunks`);
+      setTimeout(() => setUploadStatus(null), 4000);
+    } catch (err: any) {
+      setUploadStatus(`URL failed: ${err.message}`);
+    } finally {
+      setUrlBusy(false);
+    }
+  }
 
   async function handleFile(file: File) {
     setUploadStatus(`Uploading ${file.name}…`);
@@ -396,6 +416,41 @@ function AppLayout({ onLogout }: { onLogout: () => void }) {
           {docsExpanded && (
             <div className="px-3 pb-3 space-y-2">
               <DropZone onFile={handleFile} dragging={dragging} setDragging={setDragging} />
+              {/* URL ingestion */}
+              <div className="flex items-center gap-1.5">
+                <div className="flex-1 flex items-center rounded-lg overflow-hidden"
+                  style={{ border: "1px solid var(--border-strong)", background: "var(--surface-2)" }}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                    className="shrink-0 ml-2" style={{ color: "var(--text-subtle)" }}>
+                    <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
+                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                  </svg>
+                  <input
+                    type="url"
+                    placeholder="Paste URL…"
+                    value={urlInput}
+                    onChange={e => setUrlInput(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && handleIngestUrl()}
+                    className="flex-1 text-xs px-2 py-1.5 outline-none bg-transparent"
+                    style={{ color: "var(--text)" }}
+                    disabled={urlBusy}
+                  />
+                </div>
+                <button
+                  onClick={handleIngestUrl}
+                  disabled={!urlInput.trim() || urlBusy}
+                  className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center cursor-pointer btn-icon"
+                  style={{
+                    background: (!urlInput.trim() || urlBusy) ? "var(--surface-2)" : "var(--accent)",
+                    color: (!urlInput.trim() || urlBusy) ? "var(--text-muted)" : "#000",
+                    border: "1px solid var(--border)",
+                    transition: "all 150ms",
+                  }}>
+                  {urlBusy
+                    ? <Spinner size={10} color="currentColor" />
+                    : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg>}
+                </button>
+              </div>
               {uploadStatus && (
                 <div className="rounded-lg px-3 py-2 text-xs anim-fade"
                   style={{
