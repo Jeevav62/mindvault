@@ -30,7 +30,7 @@ class AmbientPayload(BaseModel):
     lon: float | None = None
     city: str | None = Field(default=None, max_length=120)
     country: str | None = Field(default=None, max_length=120)
-    timestamp: str | None = Field(default=None, max_length=40)
+    timestamp: str | None = Field(default=None, max_length=80)
 
 
 class ChatRequest(BaseModel):
