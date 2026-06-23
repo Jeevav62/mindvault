@@ -54,6 +54,8 @@ def build_web_messages(
     results: list,  # list[WebResult] — avoid circular import
     *,
     ambient_context: str | None = None,
+    history: list[tuple[str, str]] | None = None,
+    max_history_turns: int = 10,
 ) -> list[ChatMessage]:
     context_parts = [
         f"[{i+1}] {r.title}\nURL: {r.url}\n{r.content[:600]}"
@@ -61,10 +63,13 @@ def build_web_messages(
     ]
     context = "\n\n".join(context_parts) if context_parts else "(no results found)"
     ambient_block = f"\n\nAmbient context: {ambient_context}" if ambient_context else ""
-    return [
-        ChatMessage(role="system", content=_WEB_SYSTEM + ambient_block),
-        ChatMessage(role="user", content=f"Web search results:\n\n{context}\n\nQuestion: {question}"),
-    ]
+    msgs = [ChatMessage(role="system", content=_WEB_SYSTEM + ambient_block)]
+    for role, content in (history or [])[-max_history_turns * 2:]:
+        msgs.append(ChatMessage(role=role, content=content))
+    msgs.append(
+        ChatMessage(role="user", content=f"Web search results:\n\n{context}\n\nQuestion: {question}")
+    )
+    return msgs
 
 
 def build_messages(

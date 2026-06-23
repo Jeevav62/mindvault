@@ -34,6 +34,50 @@ class ChatAnswer:
     citations: list[Citation]
 
 
+def apply_web_command(question: str, mode: str) -> tuple[str, str]:
+    """`/web <query>` forces web-search mode regardless of the selected mode,
+    so the user can do a one-off lookup without flipping the toggle. Returns
+    the cleaned question and the (possibly overridden) mode."""
+    stripped = question.lstrip()
+    for prefix in ("/web ", "/web\n", "/search "):
+        if stripped.lower().startswith(prefix):
+            return stripped[len(prefix):].strip(), "web"
+    if stripped.lower() == "/web":
+        return "", "web"
+    return question, mode
+
+
+async def _web_search_query(question: str, history: list[tuple[str, str]]) -> str:
+    """Rewrite a follow-up into a standalone web-search query using prior turns.
+    e.g. "is it live now?" -> "Portugal vs Uzbekistan match live status".
+    Falls back to the raw question on any error or when there is no history."""
+    if not history:
+        return question
+    convo = "\n".join(f"{role}: {content}" for role, content in history[-6:])
+    msgs = [
+        ChatMessage(
+            role="system",
+            content=(
+                "Rewrite the user's latest message into a single standalone web "
+                "search query that includes the entities/topic from the conversation. "
+                "Resolve pronouns (it/they/that) using the history. Output ONLY the "
+                "query text — no quotes, no explanation."
+            ),
+        ),
+        ChatMessage(
+            role="user",
+            content=f"Conversation:\n{convo}\n\nLatest message: {question}\n\nSearch query:",
+        ),
+    ]
+    try:
+        out = await get_llm_router().run(lambda p: p.complete(msgs))
+        out = out.strip().strip('"').strip("'")
+        return out or question
+    except Exception:
+        logger.warning("web query rewrite failed; using raw question")
+        return question
+
+
 def _hits_to_citations(used: list[Hit]) -> list[Citation]:
     return [
         Citation(
@@ -109,10 +153,14 @@ async def answer_question_stream(
 ):
     """Async generator yielding SSE event dicts: citations → tokens → done."""
 
+    question, mode = apply_web_command(question, mode)
+    history = history or []
+
     # ── Web search mode ────────────────────────────────────────────────────
     if mode == "web":
         searcher = get_search_provider()
-        results = await searcher.search(question)
+        search_query = await _web_search_query(question, history)
+        results = await searcher.search(search_query)
         web_citations = [
             Citation(
                 source=r.title or r.url,
@@ -125,7 +173,9 @@ async def answer_question_stream(
             for i, r in enumerate(results)
         ]
         yield {"type": "citations", "citations": web_citations}
-        msgs = build_web_messages(question, results, ambient_context=ambient_context)
+        msgs = build_web_messages(
+            question, results, ambient_context=ambient_context, history=history,
+        )
         llm_router = get_llm_router()
         async for token in llm_router.run_stream(lambda p: p.complete_stream(msgs)):
             yield {"type": "token", "content": token}
