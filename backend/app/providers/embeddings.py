@@ -56,6 +56,9 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
     base = "https://generativelanguage.googleapis.com/v1beta/models"
 
+    # Gemini caps batchEmbedContents at 100 requests per call; sub-batch above this.
+    MAX_BATCH = 100
+
     # Map our generic input_type to Gemini taskType.
     _TASK = {"document": "RETRIEVAL_DOCUMENT", "query": "RETRIEVAL_QUERY"}
 
@@ -70,6 +73,14 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
     ) -> list[list[float]]:
         if not self.api_key:
             raise ProviderUnavailable("no API key configured", provider=self.name)
+        out: list[list[float]] = []
+        for start in range(0, len(texts), self.MAX_BATCH):
+            out.extend(await self._embed_batch(texts[start : start + self.MAX_BATCH], input_type))
+        return out
+
+    async def _embed_batch(
+        self, texts: list[str], input_type: str
+    ) -> list[list[float]]:
         task = self._TASK.get(input_type, "RETRIEVAL_DOCUMENT")
         url = f"{self.base}/{self.model}:batchEmbedContents?key={self.api_key}"
         body = {
