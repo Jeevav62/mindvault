@@ -8,6 +8,8 @@ os.environ.setdefault("JWT_SECRET", "test-secret-please-ignore-but-make-it-32-by
 os.environ.setdefault(
     "CRYPTO_MASTER_KEY", base64.b64encode(os.urandom(32)).decode()
 )
+# Auth tests exercise pure signup/login mechanics, not the admin-approval gate.
+os.environ.setdefault("REQUIRE_APPROVAL", "false")
 
 
 @pytest.fixture

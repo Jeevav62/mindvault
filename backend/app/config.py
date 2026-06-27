@@ -105,6 +105,8 @@ class Settings(BaseSettings):
 
     # Admin — only this email is auto-approved; everyone else needs manual approval
     admin_email: str = ""
+    # When False, signups are auto-approved (no admin gate). Used in tests/dev.
+    require_approval: bool = True
 
     # Email (Resend — https://resend.com free tier, no domain needed to send to yourself)
     resend_api_key: str = ""

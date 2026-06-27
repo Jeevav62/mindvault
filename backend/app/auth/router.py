@@ -46,8 +46,9 @@ def _is_admin(email: str) -> bool:
 @limiter.limit("5/minute")
 async def signup(request: Request, body: SignupRequest) -> TokenResponse:
     repo = get_user_repository()
-    # Admin email auto-approved; everyone else starts pending
-    initial_status = "approved" if _is_admin(str(body.email)) else "pending"
+    # Admin email auto-approved; gate everyone else unless approval is disabled.
+    auto = _is_admin(str(body.email)) or not get_settings().require_approval
+    initial_status = "approved" if auto else "pending"
     try:
         user = await repo.create(str(body.email), hash_password(body.password), status=initial_status)
     except UserExists:
