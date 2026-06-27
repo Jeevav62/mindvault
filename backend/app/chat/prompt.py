@@ -36,6 +36,10 @@ Memory rules:
 unless the user's current message directly asks about them.
 - Never pepper replies with personal details unprompted. Memory informs your tone, not your content."""
 
+# Back-compat alias: the grounded document system prompt was historically named
+# SYSTEM_PROMPT before the doc/personal/web split. Kept for imports/tests.
+SYSTEM_PROMPT = _DOC_SYSTEM
+
 
 def _budget_context(hits: list[Hit], max_chars: int) -> list[Hit]:
     kept: list[Hit] = []
