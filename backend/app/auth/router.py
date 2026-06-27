@@ -12,7 +12,7 @@ from app.limiter import limiter
 from app.email import send_approval_request_email
 from app.auth.security import create_approval_token
 from app.providers import get_llm_router, stt
-from app.providers.base import ChatMessage, ProviderError
+from app.providers.base import ChatMessage
 
 from .dependencies import get_current_user
 from .repository import UserExists, UserRecord, get_user_repository
@@ -168,15 +168,19 @@ async def voice_credentials(request: Request) -> dict:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "no audio data")
     content_type = request.headers.get("content-type", "audio/webm")
     try:
+        # stt.transcribe raises bare RuntimeError when all providers fail
+        # (e.g. transient DNS/network), so catch broadly here.
         transcript = (await stt.transcribe(audio, content_type)).strip()
-    except ProviderError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"transcription failed: {exc}")
+    except Exception as exc:
+        logger.warning("voice STT failed: %s", exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "transcription unavailable, try again")
     if not transcript:
         return {"transcript": "", "email": "", "password": ""}
     try:
         fields = await _parse_spoken_credentials(transcript)
-    except ProviderError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"parse failed: {exc}")
+    except Exception as exc:
+        logger.warning("voice credential parse failed: %s", exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "could not parse credentials, try again")
     return {"transcript": transcript, **fields}
 
 
