@@ -276,6 +276,19 @@ export async function transcribeAudio(blob: Blob): Promise<{ text: string }> {
   return json<{ text: string }>(res, doFetch);
 }
 
+export type VoiceCredentials = { transcript: string; email: string; password: string };
+
+/** Mic-mode login: send recorded audio, get back parsed credentials to prefill
+ *  the form. Public/pre-auth — no bearer token required. */
+export async function voiceLogin(blob: Blob): Promise<VoiceCredentials> {
+  const res = await fetch(`${API}/auth/voice`, {
+    method: "POST",
+    headers: { "Content-Type": blob.type || "audio/webm" },
+    body: blob,
+  });
+  return json<VoiceCredentials>(res);
+}
+
 export async function synthesizeSpeech(text: string): Promise<{ buffer: ArrayBuffer; contentType: string }> {
   const doFetch = () =>
     fetch(`${API}/tts`, {
