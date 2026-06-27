@@ -54,7 +54,7 @@ const features = [
   { icon: Icons.doc, color: "#22C55E", title: "Document RAG", desc: "Upload PDFs and text. Recursive chunking, vector retrieval, and grounded answers that cite the exact source passage — or refuse when it's not in your docs." },
   { icon: Icons.brain, color: "#818CF8", title: "Long-term Memory", desc: "Mem0-style memory persists facts about you across every session. The assistant gets more personal the more you talk to it." },
   { icon: Icons.graph, color: "#F472B6", title: "Knowledge Graph", desc: "Neo4j extracts people, places, topics and their relationships from your conversations — structured recall, not just fuzzy vectors." },
-  { icon: Icons.mic, color: "#F59E0B", title: "Realtime Voice", desc: "Speak and listen. Streaming STT over WebSocket (Deepgram) and low-latency streaming TTS (Cartesia) decoded chunk-by-chunk in the browser." },
+  { icon: Icons.mic, color: "#F59E0B", title: "Realtime Voice", desc: "Speak and listen. Mic-mode login parses your spoken email & password into the form, streaming STT over WebSocket (Deepgram), and low-latency streaming TTS (Cartesia) decoded chunk-by-chunk in the browser." },
   { icon: Icons.globe, color: "#38BDF8", title: "Live Web Search", desc: "Fuse real-time web results (Tavily) and crawled URLs with your private context for answers that aren't frozen in a training cutoff." },
   { icon: Icons.shield, color: "#34D399", title: "Encrypted & Private", desc: "Files encrypted at rest with AES-256-GCM, passwords hashed with Argon2id, JWT auth, and an invite-only approval gate." },
 ];
