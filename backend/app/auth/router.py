@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json as _json
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 import asyncio
@@ -8,6 +11,8 @@ from app.config import get_settings
 from app.limiter import limiter
 from app.email import send_approval_request_email
 from app.auth.security import create_approval_token
+from app.providers import get_llm_router, stt
+from app.providers.base import ChatMessage, ProviderError
 
 from .dependencies import get_current_user
 from .repository import UserExists, UserRecord, get_user_repository
@@ -28,6 +33,34 @@ from .security import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
+
+_VOICE_PARSE_SYSTEM = (
+    "You extract login credentials from a spoken transcript. The user said their "
+    "email and password aloud. Return ONLY a compact JSON object with keys "
+    '"email" and "password". Normalize spoken email punctuation: "at" -> "@", '
+    '"dot" -> ".", remove spaces inside the address. Strip filler words like '
+    '"my email is" / "password is". If a field is absent, use an empty string. '
+    "No markdown, no explanation — JSON only."
+)
+
+
+async def _parse_spoken_credentials(transcript: str) -> dict[str, str]:
+    """LLM-parse a spoken transcript into {email, password} for form prefill."""
+    msgs = [
+        ChatMessage(role="system", content=_VOICE_PARSE_SYSTEM),
+        ChatMessage(role="user", content=f"Transcript: {transcript}\n\nJSON:"),
+    ]
+    raw = await get_llm_router().run(lambda p: p.complete(msgs))
+    raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        data = _json.loads(raw)
+    except (ValueError, TypeError):
+        return {"email": "", "password": ""}
+    return {
+        "email": str(data.get("email", "")).strip(),
+        "password": str(data.get("password", "")).strip(),
+    }
 
 
 def _tokens(user_id: str) -> TokenResponse:
@@ -99,6 +132,32 @@ async def refresh(request: Request, body: RefreshRequest) -> TokenResponse:
     except TokenError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc))
     return _tokens(payload["sub"])
+
+
+@router.post("/voice")
+@limiter.limit("10/minute")
+async def voice_credentials(request: Request) -> dict:
+    """Mic-mode login: spoken audio -> STT transcript -> parsed {email, password}.
+
+    Public (pre-auth). The parsed fields are returned to the client to PREFILL
+    the form — the user reviews and submits through the normal login/signup
+    flow, so voice never bypasses password verification.
+    """
+    audio = await request.body()
+    if not audio:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no audio data")
+    content_type = request.headers.get("content-type", "audio/webm")
+    try:
+        transcript = (await stt.transcribe(audio, content_type)).strip()
+    except ProviderError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"transcription failed: {exc}")
+    if not transcript:
+        return {"transcript": "", "email": "", "password": ""}
+    try:
+        fields = await _parse_spoken_credentials(transcript)
+    except ProviderError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"parse failed: {exc}")
+    return {"transcript": transcript, **fields}
 
 
 @router.get("/me", response_model=UserOut)
