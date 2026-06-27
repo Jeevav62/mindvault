@@ -175,7 +175,7 @@ python -m pytest -q
 - [x] **Phase 1.5** — Admin approval workflow, per-IP rate limiting, 3D landing page
 - [ ] **Phase 2** — Mem0 persistent user memory (dual-context prompt)
 - [ ] **Phase 3** — Multimodal ingestion (audio / video via STT)
-- [ ] **Phase 4** — TTS voice responses + mic-mode login
+- [~] **Phase 4** — Voice UX: streaming TTS replies ✅ · **mic-mode login** ✅ (speak your email & password, an LLM parses them into the form) · live waveform visualizer ✅
 - [ ] **Phase 5** — Observability dashboard + cloud deploy (Vercel + Render)
 
 ---
