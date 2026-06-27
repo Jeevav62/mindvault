@@ -36,12 +36,32 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
 
 _VOICE_PARSE_SYSTEM = (
-    "You extract login credentials from a spoken transcript. The user said their "
-    "email and password aloud. Return ONLY a compact JSON object with keys "
-    '"email" and "password". Normalize spoken email punctuation: "at" -> "@", '
-    '"dot" -> ".", remove spaces inside the address. Strip filler words like '
-    '"my email is" / "password is". If a field is absent, use an empty string. '
-    "No markdown, no explanation — JSON only."
+    "You convert a SPOKEN dictation of login credentials into JSON. The user "
+    "dictates an email and a password aloud, often spelling the password "
+    "letter-by-letter with case and symbol instructions. Reconstruct each field "
+    "exactly.\n\n"
+    "Return ONLY a compact JSON object with keys \"email\" and \"password\". "
+    "No markdown, no explanation.\n\n"
+    "CASE INSTRUCTIONS (apply to the NEXT letter, then resume lowercase):\n"
+    "- \"capital X\" / \"uppercase X\" / \"big X\" / \"X caps\" / \"caps X\" -> uppercase X\n"
+    "- \"small X\" / \"lowercase X\" -> lowercase x\n"
+    "- letters dictated alone (\"j\", \"k\") default to LOWERCASE unless a case "
+    "instruction precedes them\n\n"
+    "SYMBOL / NUMBER WORDS (convert when dictated): \"at\"->@, \"dot\"/\"point\"->., "
+    "\"underscore\"->_, \"dash\"/\"hyphen\"/\"minus\"->-, \"plus\"->+, \"hash\"/\"pound\"->#, "
+    "\"star\"/\"asterisk\"->*, \"exclamation\"/\"bang\"->!, \"dollar\"->$, "
+    "\"percent\"->%, \"ampersand\"->&, number words (\"one\",\"two\") and \"number N\" -> digits.\n\n"
+    "RULES:\n"
+    "- Build the password by concatenating dictated tokens IN ORDER, no spaces.\n"
+    "- Strip filler: \"my email is\", \"password is\", \"the\", \"then\", commas, periods "
+    "used as sentence punctuation (not the literal word \"dot\").\n"
+    "- Email: lowercase it, apply \"at\"->@ and \"dot\"->., remove inner spaces.\n"
+    "- If a field is absent, use an empty string.\n\n"
+    "EXAMPLES:\n"
+    "Transcript: \"my email is alice at gmail dot com password capital J small k 4 2 dollar\"\n"
+    "JSON: {\"email\":\"alice@gmail.com\",\"password\":\"Jk42$\"}\n"
+    "Transcript: \"bob at yahoo dot com, password is hunter caps t 7\"\n"
+    "JSON: {\"email\":\"bob@yahoo.com\",\"password\":\"hunterT7\"}"
 )
 
 
