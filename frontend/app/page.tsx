@@ -5,11 +5,13 @@ import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import Landing from "./components/Landing";
+import VoiceWave from "./components/VoiceWave";
+import { useVoiceRecorder } from "@/lib/useVoiceRecorder";
 import {
   approveUser, askStream, clearMemories, clearToken, deleteDoc, deleteMemory, extractText,
   generateTitle, getMemories, getPendingUsers, getToken, getUserId, getSttWsUrl, getUsage,
   ingestUrl, login, rejectUser, saveRefreshToken, saveToken, signup, streamSpeech,
-  transcribeAudio, uploadDoc,
+  transcribeAudio, uploadDoc, voiceLogin,
   type AmbientPayload, type ChatMode, type Citation, type HistoryMessage,
   type PendingUser, type UsageData,
 } from "@/lib/api";
@@ -135,6 +137,31 @@ function AuthPage({ onAuthed, onPending }: { onAuthed: () => void; onPending: (e
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const { recording, level, error: micError, start, stop } = useVoiceRecorder();
+  const [parsing, setParsing] = useState(false);
+
+  async function toggleVoice() {
+    setError("");
+    if (!recording) {
+      await start();
+      return;
+    }
+    const blob = await stop();
+    if (!blob) return;
+    setParsing(true);
+    try {
+      const creds = await voiceLogin(blob);
+      if (creds.email) setEmail(creds.email);
+      if (creds.password) setPassword(creds.password);
+      if (!creds.email && !creds.password) {
+        setError(creds.transcript ? `Heard: "${creds.transcript}" — couldn't parse credentials` : "Didn't catch that — try again");
+      }
+    } catch (err: any) {
+      setError(err.message || "Voice login failed");
+    } finally {
+      setParsing(false);
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setError(""); setBusy(true);
@@ -230,6 +257,40 @@ function AuthPage({ onAuthed, onPending }: { onAuthed: () => void; onPending: (e
               />
             </div>
           ))}
+
+          {/* Voice / mic-mode login */}
+          <button
+            type="button"
+            onClick={toggleVoice}
+            disabled={parsing}
+            className="w-full rounded-xl py-2.5 text-xs font-semibold cursor-pointer mode-btn flex items-center justify-center gap-2"
+            style={{
+              background: recording ? "rgba(248,113,113,0.12)" : "var(--surface-2)",
+              color: recording ? "#F87171" : "var(--text-muted)",
+              border: `1px solid ${recording ? "rgba(248,113,113,0.35)" : "var(--border-strong)"}`,
+              fontFamily: "JetBrains Mono, monospace",
+            }}>
+            {parsing ? <><Spinner size={13} /><span>Parsing…</span></>
+              : recording ? <span>◼ Stop &amp; fill</span>
+              : <span>🎙 Speak your email &amp; password</span>}
+          </button>
+
+          {(recording || parsing) && (
+            <div className="rounded-xl px-4 py-3 anim-fade"
+              style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+              <VoiceWave active={recording} level={recording ? level : undefined} />
+              <p className="text-center text-xs mt-2" style={{ color: "var(--text-muted)" }}>
+                {recording ? "Listening… say it like “alice at gmail dot com, password hunter2”" : "Transcribing…"}
+              </p>
+            </div>
+          )}
+
+          {micError && (
+            <div className="rounded-xl px-4 py-2 text-xs anim-fade"
+              style={{ color: "#F87171", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)" }}>
+              {micError}
+            </div>
+          )}
 
           {error && (
             <div className="rounded-xl px-4 py-3 text-sm anim-fade"
